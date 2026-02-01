@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -65,6 +66,8 @@ func (s *Scan115Impl) GetNetFileFiles() error {
 	bufferCtx, cancelBuffer := context.WithCancel(context.Background())
 	// 启动buffer to task
 	go s.bufferMonitor(bufferCtx)
+	// 加载现有文件缓存
+	s.scrapePath.LoadExistsFiles()
 	// 加入根目录
 	s.wg = sync.WaitGroup{}
 	s.addPathToTasks(s.scrapePath.SourcePathId)
@@ -122,6 +125,13 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 					continue pageloop
 				}
 				parentPath = fsList.PathStr
+				// 路径边界检查：确保扫描的目录在 SourcePath 范围内
+				normalizedParent := normalizeRemotePath(parentPath)
+				normalizedSource := normalizeRemotePath(s.scrapePath.SourcePath)
+				if normalizedSource != "" && !strings.HasPrefix(normalizedParent, normalizedSource) {
+					helpers.AppLogger.Warnf("worker %d 跳过目录 %s：不在配置的源目录 %s 范围内 (normalized: parent=%s source=%s)", workerID, parentPath, s.scrapePath.SourcePath, normalizedParent, normalizedSource)
+					break pageloop
+				}
 				// 取完就跳出
 				if len(fsList.Data) == 0 {
 					break pageloop
@@ -133,6 +143,16 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 						return
 					}
 					if file.FileCategory == v115open.TypeDir {
+						// 排除一些不需要扫描的文件夹
+						if strings.HasPrefix(file.FileName, ".") || file.FileName == "@eaDir" || file.FileName == "#recycle" {
+							helpers.AppLogger.Infof("跳过无关文件夹: %s", file.FileName)
+							continue fileloop
+						}
+						childPath := path.Join(normalizeRemotePath(parentPath), file.FileName)
+						if s.shouldSkipDir(file.FileName, childPath) {
+							helpers.AppLogger.Infof("跳过过滤目录: %s", childPath)
+							continue fileloop
+						}
 						// 是目录，加入队列
 						s.addPathToTasks(file.FileId)
 						continue fileloop
@@ -145,10 +165,14 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 					if !s.scrapePath.CheckFileIsAllowed(file.FileName, file.FileSize) {
 						continue
 					}
+					filePath := path.Join(normalizeRemotePath(parentPath), file.FileName)
+					if s.shouldSkipFile(file.FileName, filePath, file.FileSize) {
+						helpers.AppLogger.Infof("跳过过滤文件: %s", filePath)
+						continue
+					}
 					// 检查文件是否已处理，如果已在数据库中，则直接跳过
-					exists := models.CheckExistsFileIdAndName(file.FileId, s.scrapePath.ID)
-					if exists {
-						helpers.AppLogger.Infof("文件 %s 已在数据库中，跳过", file.FileName)
+					if s.scrapePath.ExistsFiles != nil && s.scrapePath.ExistsFiles[file.FileId] {
+						// helpers.AppLogger.Infof("文件 %s 已在数据库中，跳过", file.FileName)
 						continue
 					}
 					ext := filepath.Ext(file.FileName)
@@ -158,7 +182,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 							PickCode: file.PickCode,
 							Name:     file.FileName,
 							Size:     file.FileSize,
-							Path:     filepath.Join(parentPath, file.FileName),
+							Path:     filePath,
 						})
 						continue fileloop
 					}
@@ -168,7 +192,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 							PickCode: file.PickCode,
 							Name:     file.FileName,
 							Size:     file.FileSize,
-							Path:     filepath.Join(parentPath, file.FileName),
+							Path:     filePath,
 						})
 						continue fileloop
 					}
@@ -178,7 +202,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 							PickCode: file.PickCode,
 							Name:     file.FileName,
 							Size:     file.FileSize,
-							Path:     filepath.Join(parentPath, file.FileName),
+							Path:     filePath,
 						})
 						continue fileloop
 					}
@@ -188,7 +212,7 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 							PickCode: file.PickCode,
 							Name:     file.FileName,
 							Size:     file.FileSize,
-							Path:     filepath.Join(parentPath, file.FileName),
+							Path:     filePath,
 						})
 						continue fileloop
 					}
@@ -208,4 +232,20 @@ func (s *Scan115Impl) startPathWorkWithLimiter(workerID int) {
 			s.wg.Done()
 		}
 	}
+}
+
+func normalizeRemotePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = path.Clean(p)
+	if p == "." {
+		p = "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }

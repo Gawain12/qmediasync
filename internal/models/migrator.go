@@ -28,7 +28,7 @@ func (*Migrator) TableName() string {
 func Migrate() {
 	dbFile := filepath.Join(helpers.RootDir, helpers.GlobalConfig.Db.File)
 	sqliteDb := db.GetDb(dbFile)
-	maxVersion := 14
+	maxVersion := 16
 	if sqliteDb != nil {
 		// 从sqlite迁移数据到postgres
 		moveSqliteToPostres(sqliteDb, maxVersion)
@@ -258,6 +258,16 @@ func Migrate() {
 	if migrator.VersionCode == 13 {
 		// 备份相关表 + Emby同步相关表
 		db.Db.AutoMigrate(ApiKey{})
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == 14 {
+		// 增加 ReleaseGroup 字段
+		db.Db.AutoMigrate(ScrapeMediaFile{})
+		migrator.UpdateVersionCode(db.Db)
+	}
+	if migrator.VersionCode == 15 {
+		// 增加刮削过滤关键词字段
+		db.Db.AutoMigrate(ScrapePath{})
 		migrator.UpdateVersionCode(db.Db)
 	}
 	helpers.AppLogger.Infof("当前数据库版本 %d", migrator.VersionCode)

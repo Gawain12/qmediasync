@@ -36,6 +36,7 @@ type IdentifyImpl interface {
 type TmdbImpl interface {
 	CheckByNameAndYear(name string, year int, switchYear bool) (string, int64, int, error)
 	CheckByTmdbId(tmdbId int64) (string, int, error)
+	GetEarliestYear(tmdbId int64) int
 }
 
 type categoryImpl interface {
@@ -197,4 +198,19 @@ func (s *Scrape) Stop() {
 func (s *Scrape) Rollback(mediaFile *models.ScrapeMediaFile) error {
 	s.init()
 	return s.scrapeImpl.Rollback(mediaFile)
+}
+
+func (s *Scrape) ProcessSingle(mediaFile *models.ScrapeMediaFile) error {
+	s.init()
+	defer func() {
+		s.scrapePath.SetNotRunning()
+		s.ctxCancel()
+	}()
+
+	// 加载二级分类映射
+	s.scrapePath.V115Client = s.V115Client
+	s.scrapePath.OpenListClient = s.OpenlistClient
+	s.scrapePath.GenerateCategory()
+
+	return s.scrapeImpl.Process(mediaFile)
 }

@@ -1,9 +1,19 @@
 package models
 
+import (
+	"Q115-STRM/internal/db"
+	"gorm.io/gorm"
+)
+
 type BaseModel struct {
 	ID        uint  `gorm:"primary" json:"id"`
 	CreatedAt int64 `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt int64 `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// GetDb 返回数据库连接，供其他包使用
+func GetDb() *gorm.DB {
+	return db.Db
 }
 
 // BackupConfig 备份配置

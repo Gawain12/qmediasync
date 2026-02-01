@@ -29,3 +29,11 @@ q115strm_test.exe
 q115strm.exe
 /config/backups
 docs/FeHelper-20260123203742.json
+
+# local artifacts: never commit
+*.dump
+*.log
+/Q115-STRM
+/qmediasync-service
+/go*.linux-amd64.tar.gz
+/.codex-runtime-*/

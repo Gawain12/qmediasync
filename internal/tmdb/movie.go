@@ -150,7 +150,7 @@ func (c *Client) SearchMovie(movieName string, year int, language string, switch
 	if language != "" {
 		req.SetQueryParam("language", language)
 	}
-	resp, err := c.doRequest("/search/movie", req, MakeRequestConfig(2, 5, 5))
+	resp, err := c.doRequest("/search/movie", req, MakeRequestConfig(1, 2, 5))
 	if err != nil {
 		helpers.TMDBLog.Errorf("搜索电影失败:%+v", err)
 		return nil, err

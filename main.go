@@ -220,7 +220,12 @@ func GetRootDir() string {
 		if runtime.GOOS == "windows" {
 			exPath = "D:\\Dev\\q115-strm-go"
 		} else {
-			exPath = "/home/qicfan/dev/q115-strm-go"
+			// exPath = "/home/qicfan/dev/q115-strm-go"
+			wd, err := os.Getwd()
+			if err != nil {
+				panic(err)
+			}
+			exPath = wd
 		}
 	}
 	helpers.RootDir = exPath // 获取当前工作目录
@@ -307,6 +312,9 @@ func setRouter(r *gin.Engine) {
 	r.LoadHTMLFiles(filepath.Join(helpers.RootDir, "web_statics", "index.html"))
 	r.StaticFile("/favicon.ico", filepath.Join(helpers.RootDir, "web_statics", "favicon.ico"))
 	r.StaticFS("/assets", http.Dir(filepath.Join(helpers.RootDir, "web_statics", "assets")))
+	r.StaticFS("/custom-js", http.Dir(filepath.Join(helpers.RootDir, "web_statics", "custom-js")))
+	r.StaticFile("/scrape/confirm", filepath.Join(helpers.RootDir, "web_statics", "confirm.html"))
+	r.StaticFile("/scrape/filters", filepath.Join(helpers.RootDir, "web_statics", "filters.html"))
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(200, "index.html", gin.H{})
 	})
@@ -429,14 +437,20 @@ func setRouter(r *gin.Engine) {
 		api.GET("/scrape/pathes/:id", controllers.GetScrapePath)                      // 获取刮削路径详情
 		api.POST("/scrape/pathes/start", controllers.ScanScrapePath)                  // 扫描刮削路径
 		api.POST("/scrape/pathes/stop", controllers.StopScrape)                       // 停止刮削任务
+		api.POST("/scrape/pathes/filters", controllers.UpdateScrapePathFilters)       // 更新刮削过滤关键词
 		api.POST("/scrape/pathes/toggle-cron", controllers.ToggleScrapePathCron)      // 关闭或开启刮削路径的定时刮削
 		api.GET("/scrape/records", controllers.GetScrapeRecords)                      // 获取刮削记录
+		api.GET("/scrape/record", controllers.GetScrapeRecord)                        // 获取单条刮削记录
+		api.GET("/scrape/tmdb/search", controllers.SearchTmdbCandidates)              // TMDB 搜索候选
 		api.POST("/scrape/re-scrape", controllers.ReScrape)                           // 重新刮削记录
 		api.POST("/scrape/clear-failed", controllers.ClearFailedScrapeRecords)        // 清除所有刮削失败的记录
 		api.POST("/scrape/truncate-all", controllers.TruncateAllScrapeRecords)        // 一键清空所有刮削记录
 		api.DELETE("/scrape/records", controllers.DeleteScrapeMediaFile)              // 删除刮削记录
 		api.POST("/scrape/finish", controllers.FinishScrapeMediaFile)                 // 完成刮削记录
 		api.POST("/scrape/rename-failed", controllers.RenameFailedScrapeMediaFile)    // 标记所有失败的记录为待整理
+		api.POST("/scrape/execute", controllers.ExecuteSingleScrape)                  // 单独立即执行刮削
+		api.POST("/scrape/execute-batch", controllers.ExecuteBatchScrapeByTmdbid)     // 批量立即处理已有ID的条目
+		api.GET("/scrape/export-mapping", controllers.ExportMappingRecords)           // 导出刮削映射记录
 
 		api.GET("/upload/queue", controllers.UploadList)                                             // 获取上传队列列表
 		api.POST("/upload/queue/clear-pending", controllers.ClearPendingUploadTasks)                 // 清除上传队列中未开始的任务
@@ -508,8 +522,15 @@ func ParseParams() {
 			fmt.Printf("使用环境变量 GUID: %s 执行操作\n", guidEnv)
 			helpers.Guid = guidEnv
 		} else {
-			fmt.Printf("使用默认用户: qms (12333) 执行操作\n")
-			helpers.Guid = "12331"
+			// 如果在docker中运行，使用默认的12331
+			if helpers.IsRunningInDocker() {
+				fmt.Printf("Docker环境，使用默认用户: qms (12331) 执行操作\n")
+				helpers.Guid = "12331"
+			} else {
+				// 本地运行使用当前用户
+				helpers.Guid = fmt.Sprintf("%d", os.Getuid())
+				fmt.Printf("使用当前用户 UID: %s 执行操作\n", helpers.Guid)
+			}
 		}
 	}
 }

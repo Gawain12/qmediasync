@@ -31,6 +31,7 @@ var excludeKeyword = []string{
 	"60帧率版本", "120帧率版本", "amazon", "超清修复版", "彩色修复版", "老片修复版", "超清无台标版", "超清有台标版", "默声修复版", "CCTV6-HD",
 	"4KHDR片源", "黄渤新片", "中字畅享版",
 	"(CR", "WEB", `NUKEHD`, "KR", "CUSTOM", "remastered", "FRE",
+	"Criterion Collection", "Criterion", "Collection",
 }
 
 var preExclucdePatterns = []string{
@@ -38,6 +39,7 @@ var preExclucdePatterns = []string{
 	`CCTV\d\-HD`,
 	`(LPCM)(\s|\.)?\d\.?\d?`,
 	`(AAC|DDP|DD|TRUEHD|PCM)(\s|\.)?\d\.?\d?`,
+	`(FLAC)(\s|\.)?\d\.?\d?`,
 	`MA\.?\d\.\d`,
 	`H\.?26[4|5]`,
 	`\w{4, 10}HD`,
@@ -54,6 +56,7 @@ type MediaInfo struct {
 	Season  int    `json:"season"`
 	Episode int    `json:"episode"`
 	TmdbId  int64  `json:"tmdbid"`
+	Group   string `json:"group"`
 }
 
 func ExtractTmdbId(name string) int64 {
@@ -103,6 +106,9 @@ func ExtractMediaInfoRe(name string, isMovie bool, seEp bool, videoExt []string,
 			break
 		}
 	}
+	// 提取发布小组 (Release Group)
+	info.Group = ExtractReleaseGroup(name)
+
 	if info.Name == "" && info.Year == 0 {
 		// 如果只有一个《》，则直接取其中的内容
 		if strings.Count(name, "《") == 1 && strings.Count(name, "》") == 1 {
@@ -157,6 +163,8 @@ func ExtractMediaInfoRe(name string, isMovie bool, seEp bool, videoExt []string,
 	name = RemovePreExlucde(name)
 	names, maxDelimiter := SplitTitle(name)
 	// fmt.Printf("分隔符: %s\n", maxDelimiter)
+	// 对于使用点号分隔的0day格式，年份后的内容通常是技术信息
+	isZeroDayFormat := maxDelimiter == "."
 	// 对每一部分进行处理
 	newNames := make([]string, 0)
 	hasYear := false
@@ -170,7 +178,14 @@ func ExtractMediaInfoRe(name string, isMovie bool, seEp bool, videoExt []string,
 			n, info.Year = ye.ExtractYear(n)
 			if info.Year != 0 {
 				hasYear = true
+				// 对于0day格式电影，年份后的内容通常是技术信息（编码、分辨率等），停止收集
+				if isMovie && isZeroDayFormat && n == "" {
+					break
+				}
 			}
+		} else if isMovie && isZeroDayFormat {
+			// 0day格式电影模式下，已经找到年份，后续内容不再作为标题
+			break
 		}
 		if n == "" || n == "[]" || n == "{}" || n == "()" {
 			continue
@@ -415,7 +430,7 @@ func removeTitleGroup(filename string) string {
 		`MWeb$`, "SPWEB$", "DREAMHD$",
 		`PTer$`, `MWeb$`, `NoGroup$`, `CMCT$`, `HDSky$`, `Hero$`, `HDSky$`,
 		`CHDBits$`, `HDHome$`, `HDSpace$`, `QuickIO$`, `NUKEHD$`, `WEBLE`,
-		`112114119$`,
+		`112114119$`, `BMDru$`,
 	}
 
 	// 移除发布组
@@ -425,6 +440,76 @@ func removeTitleGroup(filename string) string {
 		result = re.ReplaceAllString(result, "")
 	}
 	return result
+}
+
+func ExtractReleaseGroup(filename string) string {
+	// 尝试从文件名结尾提取小组（通常是最后一个横杠之后）
+	// 例如: Movie.Name.2023.1080p.x264-CHD
+	if strings.Contains(filename, "-") {
+		parts := strings.Split(filename, "-")
+		lastPart := parts[len(parts)-1]
+		// 简单的有效性过滤：不应包含空格，不应太长，包含字母或数字
+		if len(lastPart) > 1 && len(lastPart) < 15 && !strings.Contains(lastPart, " ") {
+			// 排除一些误匹配的词
+			lowered := strings.ToLower(lastPart)
+			excludes := []string{"10bit", "8bit", "hf", "fhd", "uhd"}
+			if !slices.Contains(excludes, lowered) {
+				return lastPart
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractResolutionFromFilename 从文件名中提取分辨率信息
+// 返回标准分辨率名和通用名，例如: 1080p, Full HD
+func ExtractResolutionFromFilename(filename string) (string, string) {
+	name := strings.ToLower(filename)
+	resolutions := []struct {
+		regex    *regexp.Regexp
+		standard string
+		common   string
+	}{
+		{regexp.MustCompile(`(?i)2160p|4k|uhd|3840x2160|4096x2160`), "2160p", "4K UHD"},
+		{regexp.MustCompile(`(?i)1080p|1080i|fhd|1920x1080`), "1080p", "Full HD"},
+		{regexp.MustCompile(`(?i)720p|720i|hd|1280x720`), "720p", "HD"},
+		{regexp.MustCompile(`(?i)480p|480i|sd|720x480|640x480`), "480p", "SD"},
+	}
+	for _, res := range resolutions {
+		if res.regex.MatchString(name) {
+			return res.standard, res.common
+		}
+	}
+	return "", ""
+}
+
+// ExtractSourceTag 从文件名中提取片源信息（0day 常见标记）
+func ExtractSourceTag(filename string) string {
+	name := strings.ToLower(filename)
+	sources := []struct {
+		regex *regexp.Regexp
+		tag   string
+	}{
+		{regexp.MustCompile(`(?i)uhd[\s\.\-_]*blu[\s\.\-_]*ray|uhd[\s\.\-_]*bluray`), "UHD.BluRay"},
+		{regexp.MustCompile(`(?i)blu[\s\.\-_]*ray|bluray`), "BluRay"},
+		{regexp.MustCompile(`(?i)web[\s\.\-_]*dl`), "WEB-DL"},
+		{regexp.MustCompile(`(?i)web[\s\.\-_]*rip`), "WEBRip"},
+		{regexp.MustCompile(`(?i)hdtv`), "HDTV"},
+		{regexp.MustCompile(`(?i)dvd[\s\.\-_]*rip`), "DVDRip"},
+		{regexp.MustCompile(`(?i)bd[\s\.\-_]*rip`), "BDRip"},
+		{regexp.MustCompile(`(?i)br[\s\.\-_]*rip`), "BRRip"},
+		{regexp.MustCompile(`(?i)hd[\s\.\-_]*rip`), "HDRip"},
+		{regexp.MustCompile(`(?i)remux`), "Remux"},
+		{regexp.MustCompile(`(?i)cam`), "CAM"},
+		{regexp.MustCompile(`(?i)ts`), "TS"},
+		{regexp.MustCompile(`(?i)tc`), "TC"},
+	}
+	for _, src := range sources {
+		if src.regex.MatchString(name) {
+			return src.tag
+		}
+	}
+	return ""
 }
 
 func removeVideoCodec(filename string) string {

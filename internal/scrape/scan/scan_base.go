@@ -21,6 +21,7 @@ type localFile struct {
 	Size     int64
 	Path     string
 }
+
 type scanBaseImpl struct {
 	ctx        context.Context
 	scrapePath *models.ScrapePath
@@ -29,6 +30,11 @@ type scanBaseImpl struct {
 	mu         sync.RWMutex // 保护缓冲区的锁
 	wg         sync.WaitGroup
 	pathTasks  chan string
+}
+
+// ClearScannedDirsCache 清除扫描缓存（保留接口以兼容现有调用）
+func ClearScannedDirsCache() {
+	helpers.AppLogger.Infof("扫描缓存已清除")
 }
 
 func (s *scanBaseImpl) CheckIsRunning() bool {
@@ -233,6 +239,12 @@ videoloop:
 				helpers.AppLogger.Errorf("提取季和集序号失败, 文件名: %s, 季 %d 集 %d 失败原因: %v", mediaFile.VideoFilename, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, err)
 				continue
 			}
+		} else {
+			// 电影或其他类型也提取一下小组名
+			info := helpers.ExtractMediaInfoRe(mediaFile.VideoFilename, true, false, s.scrapePath.VideoExtList, s.scrapePath.DeleteKeyword...)
+			if info != nil {
+				mediaFile.ReleaseGroup = info.Group
+			}
 		}
 		mediaFile.Status = models.ScrapeMediaStatusScanned
 		mediaFile.ScanTime = time.Now().Unix()
@@ -250,6 +262,43 @@ videoloop:
 	return nil
 }
 
+func (s *scanBaseImpl) shouldSkipDir(name, fullPath string) bool {
+	return s.matchExcludeKeywords(name, fullPath, s.scrapePath.ExcludeDirKeywords)
+}
+
+func (s *scanBaseImpl) shouldSkipFile(name, fullPath string, size int64) bool {
+	if !s.matchExcludeKeywords(name, fullPath, s.scrapePath.ExcludeFileKeywords) {
+		return false
+	}
+	// 关键词命中时，结合体积判断，避免误过滤正常电影
+	threshold := s.scrapePath.MinVideoFileSize
+	if threshold <= 0 {
+		threshold = 300 * 1024 * 1024 // 300MB 默认阈值
+	}
+	if size > 0 && size >= threshold {
+		return false
+	}
+	return true
+}
+
+func (s *scanBaseImpl) matchExcludeKeywords(name, fullPath string, keywords []string) bool {
+	if len(keywords) == 0 {
+		return false
+	}
+	n := strings.ToLower(name)
+	p := strings.ToLower(fullPath)
+	for _, keyword := range keywords {
+		kw := strings.ToLower(strings.TrimSpace(keyword))
+		if kw == "" {
+			continue
+		}
+		if strings.Contains(n, kw) || strings.Contains(p, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *scanBaseImpl) ExtractSeasonEpisode(mediaFile *models.ScrapeMediaFile) error {
 	if mediaFile.EpisodeNumber == -1 {
 		// 先识别季集
@@ -260,7 +309,8 @@ func (m *scanBaseImpl) ExtractSeasonEpisode(mediaFile *models.ScrapeMediaFile) e
 		}
 		mediaFile.EpisodeNumber = info.Episode
 		mediaFile.SeasonNumber = info.Season
-		helpers.AppLogger.Infof("从文件名中提取到季集: %s %d, %d", mediaFile.VideoFilename, mediaFile.SeasonNumber, mediaFile.EpisodeNumber)
+		mediaFile.ReleaseGroup = info.Group
+		helpers.AppLogger.Infof("从文件名中提取到季集: %s %d, %d, 小组: %s", mediaFile.VideoFilename, mediaFile.SeasonNumber, mediaFile.EpisodeNumber, mediaFile.ReleaseGroup)
 	}
 	if mediaFile.SeasonNumber == -1 {
 		// 从父目录中提取季数

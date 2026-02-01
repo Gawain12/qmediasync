@@ -12,6 +12,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
+	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/robfig/cron/v3 v3.0.0
 	github.com/shirou/gopsutil v2.21.11+incompatible
 	golang.org/x/crypto v0.42.0

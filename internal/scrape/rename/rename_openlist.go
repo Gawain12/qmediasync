@@ -423,15 +423,39 @@ func (r *RenameOpenList) MoveFiles(f models.MoveNewFileToSourceFile) error {
 }
 
 func (r *RenameOpenList) DeleteDir(path, pathId string) error {
+	if pathId == "" && path == "" {
+		helpers.AppLogger.Warnf("删除目录参数为空，已跳过")
+		return nil
+	}
+	if r.isRootPath(pathId) || r.isRootPath(path) {
+		helpers.AppLogger.Warnf("禁止删除根目录: path=%s pathId=%s", path, pathId)
+		return nil
+	}
 	return r.client.Del(filepath.Dir(pathId), []string{filepath.Base(pathId)})
 }
 
 func (r *RenameOpenList) Rename(fileId, newName string) error {
+	if fileId == "" {
+		helpers.AppLogger.Warnf("重命名参数为空，已跳过: newName=%s", newName)
+		return nil
+	}
+	if r.isRootPath(fileId) {
+		helpers.AppLogger.Warnf("禁止重命名根目录: fileId=%s newName=%s", fileId, newName)
+		return nil
+	}
 	return r.client.Rename(filepath.Dir(fileId), filepath.Base(fileId), newName)
 }
 
 // 检查是否存在，存在就改名字，然后返回新的fileId
 func (r *RenameOpenList) ExistsAndRename(fileId, newName string) (string, error) {
+	if fileId == "" {
+		helpers.AppLogger.Warnf("重命名参数为空，已跳过: newName=%s", newName)
+		return "", nil
+	}
+	if r.isRootPath(fileId) {
+		helpers.AppLogger.Warnf("禁止重命名根目录: fileId=%s newName=%s", fileId, newName)
+		return fileId, nil
+	}
 	// 检查是否存在
 	fsDetail, err := r.client.FileDetail(fileId)
 	if err != nil || (fsDetail != nil && fsDetail.Name == "") {

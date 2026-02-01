@@ -39,15 +39,22 @@ func (i *IdTvShowImpl) Identify(mediaFile *models.ScrapeMediaFile) error {
 		mediaFile.Save()
 	}
 	if err != nil {
+		if info != nil {
+			helpers.AppLogger.Warnf("电视剧识别失败: file=%s folder=%s parsed_name=%s parsed_year=%d parsed_tmdb=%d err=%v", mediaFile.VideoFilename, filepath.Base(mediaFile.TvshowPath), info.Name, info.Year, info.TmdbId, err)
+		} else {
+			helpers.AppLogger.Warnf("电视剧识别失败: file=%s folder=%s err=%v", mediaFile.VideoFilename, filepath.Base(mediaFile.TvshowPath), err)
+		}
 		reason := err.Error()
 		if err.Error() == "多条记录" {
-			reason = "通过名称和年份查询到多部电视剧，需要手工重新识别输入确定的tmdb id"
+			reason = fmt.Sprintf("通过名称和年份查询到多部电视剧，需要手工重新识别输入确定的tmdb id。可打开 /scrape/confirm?id=%d 进行确认", mediaFile.ID)
+		} else {
+			reason = fmt.Sprintf("%s。可打开 /scrape/confirm?id=%d 进行确认", reason, mediaFile.ID)
 		}
 		mediaFile.Failed(reason)
 		return err
 	}
 	if info.Name == "" || info.Year == 0 || info.TmdbId == 0 {
-		return errors.New("无法从文件名和文件夹名中提取到完整的电视剧信息")
+		return errors.New(fmt.Sprintf("无法从文件名和文件夹名中提取到完整的电视剧信息。可打开 /scrape/confirm?id=%d 进行确认", mediaFile.ID))
 	}
 	// 保存
 	mediaFile.TmdbId = info.TmdbId
@@ -78,13 +85,17 @@ func (i *IdTvShowImpl) extractInfo(mediaFile *models.ScrapeMediaFile) (*helpers.
 	}
 	info, err := i.extractInfoByRE(mediaFile)
 	if err != nil {
-		helpers.AppLogger.Errorf("使用正则提取电影信息失败: %v", err)
+		helpers.AppLogger.Errorf("使用正则提取电视剧信息失败: %v", err)
+		if info != nil && info.Name != "" && info.Year != 0 {
+			helpers.AppLogger.Warnf("正则已解析名称/年份，但TMDB识别失败，跳过AI辅助: file=%s name=%s year=%d err=%v", mediaFile.VideoFilename, info.Name, info.Year, err)
+			return info, err
+		}
 		if disableAI || i.scrapePath.EnableAi == models.AiActionOff {
 			helpers.AppLogger.Errorf("由于禁用AI识别，所以直接返回错误: %v", err)
-			return nil, err
+			return info, err
 		}
 	} else if info.TmdbId != 0 {
-		helpers.AppLogger.Infof("使用正则提取电影信息成功, 文件名 %s, 文件夹：%s 提取结果 %+v", mediaFile.VideoFilename, filepath.Base(mediaFile.TvshowPath), info)
+		helpers.AppLogger.Infof("使用正则提取电视剧信息成功, 文件名 %s, 文件夹：%s 提取结果 %+v", mediaFile.VideoFilename, filepath.Base(mediaFile.TvshowPath), info)
 		return &helpers.MediaInfo{
 			Name:   info.Name,
 			Year:   info.Year,
@@ -188,7 +199,8 @@ func (i *IdTvShowImpl) extractInfoByRE(mediaFile *models.ScrapeMediaFile) (*help
 		// 使用名称和年份查询
 		cname, cid, cyear, cerr := i.tmdbImpl.CheckByNameAndYear(info.Name, info.Year, true)
 		if cerr != nil {
-			helpers.AppLogger.Errorf("使用名称和年份查询媒体信息失败, 名称 %s, 年份 %d, 错误信息 %v", info.Name, info.Year, cerr)
+			helpers.AppLogger.Errorf("使用名称和年份查询媒体信息失败, 名称 %s, 年份 %d, 错误信息 %v (file=%s)", info.Name, info.Year, cerr, filename)
+			return info, cerr
 		} else {
 			info.TmdbId = cid
 			info.Year = cyear
@@ -227,9 +239,9 @@ func (i *IdTvShowImpl) extractInfoByRE(mediaFile *models.ScrapeMediaFile) (*help
 		// 使用名称和年份查询
 		cname, cid, cyear, cerr := i.tmdbImpl.CheckByNameAndYear(info.Name, info.Year, true)
 		if cerr != nil {
-			err := fmt.Errorf("使用名称和年份查询媒体信息失败, 名称 %s, 年份 %d, 错误信息 %v", info.Name, info.Year, cerr)
+			err := fmt.Errorf("使用名称和年份查询媒体信息失败, 名称 %s, 年份 %d, 错误信息 %v (file=%s)", info.Name, info.Year, cerr, filename)
 			helpers.AppLogger.Errorf(err.Error())
-			return nil, err
+			return info, err
 		} else {
 			info.TmdbId = cid
 			info.Year = cyear
@@ -238,5 +250,5 @@ func (i *IdTvShowImpl) extractInfoByRE(mediaFile *models.ScrapeMediaFile) (*help
 			return info, nil
 		}
 	}
-	return nil, fmt.Errorf("文件名 %s, 无法提取到任何媒体信息", filename)
+	return info, fmt.Errorf("文件名 %s, 无法提取到任何媒体信息", filename)
 }

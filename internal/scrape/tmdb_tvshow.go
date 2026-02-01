@@ -58,3 +58,7 @@ func (t *TmdbTvShowImpl) CheckByTmdbId(tmdbId int64) (string, int, error) {
 	}
 	return tvDetail.Name, helpers.ParseYearFromDate(tvDetail.FirstAirDate), nil
 }
+
+func (t *TmdbTvShowImpl) GetEarliestYear(tmdbId int64) int {
+	return 0
+}

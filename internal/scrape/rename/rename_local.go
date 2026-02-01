@@ -422,15 +422,39 @@ func (r *RenameLocal) MoveFiles(f models.MoveNewFileToSourceFile) error {
 }
 
 func (r *RenameLocal) DeleteDir(path, pathId string) error {
+	if pathId == "" && path == "" {
+		helpers.AppLogger.Warnf("删除目录参数为空，已跳过")
+		return nil
+	}
+	if r.isRootPath(pathId) || r.isRootPath(path) {
+		helpers.AppLogger.Warnf("禁止删除根目录: path=%s pathId=%s", path, pathId)
+		return nil
+	}
 	return os.RemoveAll(pathId)
 }
 
 func (r *RenameLocal) Rename(fileId, newName string) error {
+	if fileId == "" {
+		helpers.AppLogger.Warnf("重命名参数为空，已跳过: newName=%s", newName)
+		return nil
+	}
+	if r.isRootPath(fileId) {
+		helpers.AppLogger.Warnf("禁止重命名根目录: fileId=%s newName=%s", fileId, newName)
+		return nil
+	}
 	return helpers.MoveFile(fileId, filepath.Join(filepath.Dir(fileId), newName), false)
 }
 
 // 检查是否存在，存在就改名字，然后返回新的fileId
 func (r *RenameLocal) ExistsAndRename(fileId, newName string) (string, error) {
+	if fileId == "" {
+		helpers.AppLogger.Warnf("重命名参数为空，已跳过: newName=%s", newName)
+		return "", nil
+	}
+	if r.isRootPath(fileId) {
+		helpers.AppLogger.Warnf("禁止重命名根目录: fileId=%s newName=%s", fileId, newName)
+		return fileId, nil
+	}
 	// 检查是否存在
 	if !helpers.PathExists(fileId) {
 		helpers.AppLogger.Infof("本地文件不存在，无需重命名: 路径：%s", fileId)

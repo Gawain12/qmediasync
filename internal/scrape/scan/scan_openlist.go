@@ -140,12 +140,20 @@ func (s *ScanOpenlistImpl) startPathWorkWithLimiter(workerID int) {
 					}
 					fullFilePathName := filepath.Join(parentPath, file.Name)
 					if file.IsDir {
+						if s.shouldSkipDir(file.Name, fullFilePathName) {
+							helpers.AppLogger.Infof("跳过过滤目录: %s", fullFilePathName)
+							continue fileloop
+						}
 						// 是目录，加入队列
 						s.addPathToTasks(fullFilePathName)
 						continue fileloop
 					}
 					// 检查文件是否允许处理
 					if !s.scrapePath.CheckFileIsAllowed(file.Name, file.Size) {
+						continue fileloop
+					}
+					if s.shouldSkipFile(file.Name, fullFilePathName, file.Size) {
+						helpers.AppLogger.Infof("跳过过滤文件: %s", fullFilePathName)
 						continue fileloop
 					}
 

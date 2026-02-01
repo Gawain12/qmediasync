@@ -66,3 +66,28 @@ func (t *TmdbMovieImpl) CheckByTmdbId(tmdbId int64) (string, int, error) {
 	}
 	return movieDetail.Title, helpers.ParseYearFromDate(movieDetail.ReleaseDate), nil
 }
+
+func (t *TmdbMovieImpl) GetEarliestYear(tmdbId int64) int {
+	releases, err := t.Client.GetReleasesDate(tmdbId)
+	if err != nil {
+		return 0
+	}
+	earliestDate := ""
+	for _, country := range releases.Results {
+		for _, rd := range country.ReleaseDates {
+			if rd.ReleaseDate != "" {
+				compDate := rd.ReleaseDate
+				if len(compDate) > 10 {
+					compDate = compDate[:10]
+				}
+				if earliestDate == "" || compDate < earliestDate {
+					earliestDate = compDate
+				}
+			}
+		}
+	}
+	if earliestDate != "" {
+		return helpers.ParseYearFromDate(earliestDate)
+	}
+	return 0
+}

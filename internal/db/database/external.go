@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,29 +79,39 @@ func (m *ExternalManager) GetDB() *sql.DB {
 }
 
 func (m *ExternalManager) InitDataDir() {
+	uid, _ := strconv.Atoi(helpers.Guid)
+	gid := uid
+
 	configDir := filepath.Dir(filepath.Dir(m.config.DataDir))
 	// 更改configDir的目录所有者
-	exec.Command("chown", "-R", "qms:qms", configDir).Run() // 设置目录所有者为qms:qms
-	exec.Command("chmod", "777", configDir).Run()           // 设置目录权限为777
+	// exec.Command("chown", "-R", "qms:qms", configDir).Run() // 设置目录所有者为qms:qms
+	// exec.Command("chmod", "777", configDir).Run()           // 设置目录权限为777
+	os.Chown(configDir, uid, gid)
+	os.Chmod(configDir, 0777)
+
 	postgresRoot := filepath.Dir(m.config.DataDir)
 	if !helpers.PathExists(postgresRoot) {
 		os.MkdirAll(postgresRoot, 0755)      // 如果没有config目录则创建
-		os.Chown(postgresRoot, 12331, 12331) // 设置目录所有者为12331:12331
+		os.Chown(postgresRoot, uid, gid) // 设置目录所有者为12331:12331
 		helpers.AppLogger.Infof("创建Postgres目录 %s 成功", postgresRoot)
 	} else {
 		// os.Chown(postgresRoot, 12331, 12331)                       // 设置目录所有者为12331:12331
-		exec.Command("chown", "-R", "qms:qms", postgresRoot).Run() // 设置目录所有者为qms:qms
-		exec.Command("chmod", "-R", "750", postgresRoot).Run()     // 设置目录权限为750
+		// exec.Command("chown", "-R", "qms:qms", postgresRoot).Run() // 设置目录所有者为qms:qms
+		// exec.Command("chmod", "-R", "750", postgresRoot).Run()     // 设置目录权限为750
+		os.Chown(postgresRoot, uid, gid)
+		os.Chmod(postgresRoot, 0750)
 		helpers.AppLogger.Infof("设置Postgres目录 %s 权限为750成功", postgresRoot)
 	}
 	dataDir := filepath.Join(postgresRoot, "data")
 	if !helpers.PathExists(dataDir) {
 		os.MkdirAll(dataDir, 0750)      // 如果没有data目录则创建
-		os.Chown(dataDir, 12331, 12331) // 设置目录所有者为12331:12331
+		os.Chown(dataDir, uid, gid) // 设置目录所有者为12331:12331
 		helpers.AppLogger.Infof("创建Postgres数据目录 %s 成功", dataDir)
 	} else {
-		exec.Command("chown", "-R", "qms:qms", dataDir).Run() // 设置目录所有者为qms:qms
-		exec.Command("chmod", "-R", "750", dataDir).Run()     // 设置目录权限为750
+		// exec.Command("chown", "-R", "qms:qms", dataDir).Run() // 设置目录所有者为qms:qms
+		// exec.Command("chmod", "-R", "750", dataDir).Run()     // 设置目录权限为750
+		os.Chown(dataDir, uid, gid)
+		os.Chmod(dataDir, 0750)
 		helpers.AppLogger.Infof("设置Postgres数据目录 %s 权限为750成功", dataDir)
 	}
 	postmasterFile := filepath.Join(dataDir, "postmaster.pid")
@@ -114,7 +125,7 @@ func (m *ExternalManager) InitDataDir() {
 		helpers.AppLogger.Infof("删除Postgres日志目录 %s 成功", logDir)
 	}
 	os.MkdirAll(logDir, 0755)      // 如果没有log目录则创建
-	os.Chown(logDir, 12331, 12331) // 设置目录所有者为12331:12331
+	os.Chown(logDir, uid, gid) // 设置目录所有者为12331:12331
 	helpers.AppLogger.Infof("创建Postgres日志目录 %s 成功", logDir)
 	tmpDir := filepath.Join(postgresRoot, "tmp")
 	if helpers.PathExists(tmpDir) {
@@ -122,7 +133,7 @@ func (m *ExternalManager) InitDataDir() {
 		helpers.AppLogger.Infof("删除Postgres临时目录 %s 成功", tmpDir)
 	}
 	os.MkdirAll(tmpDir, 0755)      // 如果没有tmp目录则创建
-	os.Chown(tmpDir, 12331, 12331) // 设置目录所有者为12331:12331
+	os.Chown(tmpDir, uid, gid) // 设置目录所有者为12331:12331
 	helpers.AppLogger.Infof("创建Postgres临时目录 %s 成功", tmpDir)
 }
 func (m *ExternalManager) prepareDataDir() error {
@@ -216,7 +227,10 @@ max_parallel_workers = 8
 		return fmt.Errorf("写入 postgresql.conf 失败: %v", err)
 	}
 	// 改变所有者
-	os.Chown(confPath, 12331, 12331) // 设置文件所有者为12331:12331
+	uid, _ := strconv.Atoi(helpers.Guid)
+	gid := uid
+	os.Chown(confPath, uid, gid) // 设置文件所有者为配置的用户
+
 	// 配置 pg_hba.conf（保持不变）
 	hbaPath := filepath.Join(m.config.DataDir, "pg_hba.conf")
 	hbaContent := `
@@ -229,7 +243,7 @@ host    all             all             ::1/128                 trust
 		return fmt.Errorf("写入 pg_hba.conf 失败: %v", err)
 	}
 	// 改变所有者
-	os.Chown(hbaPath, 12331, 12331) // 设置文件所有者为12331:12331
+	os.Chown(hbaPath, uid, gid) // 设置文件所有者为配置的用户
 
 	helpers.AppLogger.Infof("PostgreSQL 配置完成，共享内存类型: %s", sharedMemoryType)
 	return nil

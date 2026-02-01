@@ -3,6 +3,8 @@ package controllers
 import (
 	"Q115-STRM/internal/helpers"
 	"Q115-STRM/internal/models"
+	"Q115-STRM/internal/scrape"
+	"Q115-STRM/internal/scrape/scan"
 	"Q115-STRM/internal/synccron"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -356,13 +359,16 @@ func GetScrapeRecords(c *gin.Context) {
 	}
 	pageSize := helpers.StringToInt(c.Query("pageSize"))
 	if pageSize == 0 {
-		pageSize = 100
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
 	}
 	mediaType := c.Query("type")
 	status := c.Query("status")
 	name := c.Query("name")
 	scrapePathesCache := make(map[uint]*models.ScrapePath)
-	total, scrapeRecords := models.GetScrapeMediaFiles(page, pageSize, mediaType, status, name)
+	total, scrapeRecords := models.GetScrapeMediaFilesLite(page, pageSize, mediaType, status, name)
 	type scrapeMediaResp struct {
 		ID              uint   `json:"id"`
 		Type            string `json:"type"`
@@ -411,6 +417,13 @@ func GetScrapeRecords(c *gin.Context) {
 		Total: total,
 		List:  make([]*scrapeMediaResp, len(scrapeRecords)),
 	}
+	episodeIds := make([]uint, 0)
+	for _, scrapeMedia := range scrapeRecords {
+		if scrapeMedia.MediaEpisodeId > 0 {
+			episodeIds = append(episodeIds, scrapeMedia.MediaEpisodeId)
+		}
+	}
+	episodeNameMap := models.GetMediaEpisodeNamesByIds(episodeIds)
 	for i, scrapeMedia := range scrapeRecords {
 		var scrapePath *models.ScrapePath
 		var ok bool
@@ -449,8 +462,8 @@ func GetScrapeRecords(c *gin.Context) {
 			Resolution:      scrapeMedia.Resolution,
 			ResolutionLevel: scrapeMedia.ResolutionLevel,
 			IsHDR:           scrapeMedia.IsHDR,
-			AudioCount:      len(scrapeMedia.AudioCodec),
-			SubtitleCount:   len(scrapeMedia.SubtitleCodec),
+			AudioCount:      0,
+			SubtitleCount:   0,
 			CreatedAt:       scrapeMedia.CreatedAt,
 			UpdatedAt:       scrapeMedia.UpdatedAt,
 			ScrapedAt:       scrapeMedia.ScrapeTime,
@@ -466,9 +479,21 @@ func GetScrapeRecords(c *gin.Context) {
 			RenameType:      string(scrapePath.RenameType),
 			ScrapeType:      string(scrapePath.ScrapeType),
 		}
+		if scrapeMedia.AudioCodecJson != "" {
+			audioCodec, err := helpers.StringJson[[]*models.AudioCodec](scrapeMedia.AudioCodecJson)
+			if err == nil {
+				resp.List[i].AudioCount = len(audioCodec)
+			}
+		}
+		if scrapeMedia.SubtitleCodecJson != "" {
+			subtitleCodec, err := helpers.StringJson[[]*models.Subtitle](scrapeMedia.SubtitleCodecJson)
+			if err == nil {
+				resp.List[i].SubtitleCount = len(subtitleCodec)
+			}
+		}
 		if scrapeMedia.MediaType == models.MediaTypeTvShow {
-			if scrapeMedia.MediaEpisode != nil {
-				resp.List[i].EpisodeName = scrapeMedia.MediaEpisode.EpisodeName
+			if name, ok := episodeNameMap[scrapeMedia.MediaEpisodeId]; ok {
+				resp.List[i].EpisodeName = name
 			}
 			resp.List[i].NewPath = filepath.Join(resp.List[i].NewPath, scrapeMedia.NewSeasonPathName)
 		}
@@ -620,20 +645,40 @@ func ReScrape(c *gin.Context) {
 		return
 	}
 	oldStatus := scrapeMedia.Status
-	err := scrapeMedia.ReScrape(req.Name, req.Year, req.TmdbId, req.Season, req.Episode)
+	noRollback := oldStatus == models.ScrapeMediaStatusRenamed
+	err := scrapeMedia.ReScrape(req.Name, req.Year, req.TmdbId, req.Season, req.Episode, noRollback)
 	if err != nil {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "重新刮削失败: " + err.Error(), Data: nil})
 		return
 	}
 	if oldStatus == models.ScrapeMediaStatusRenamed {
-		synccron.StartScrapeRollbackCron() // 触发一次
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，已将文件移动并重命名到源目录，下次扫描时会使用新的名称和年份进行刮削", Data: nil})
+		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，已在后台启动重新识别（不回滚源文件）...", Data: nil})
 	} else {
 		data := make(map[string]any)
 		data["name"] = scrapeMedia.Name
 		data["year"] = scrapeMedia.Year
 		data["tmdb_id"] = scrapeMedia.TmdbId
-		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，下次扫描时会使用新的名称和年份进行刮削", Data: data})
+		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，已在后台启动刮削任务...", Data: data})
+	}
+
+	// 立即触发异步刮削
+	if scrapeMedia.TmdbId > 0 {
+		go func() {
+			helpers.AppLogger.Infof("手动确认 ID 后立即触发刮削：ID=%d, Movie=%s", scrapeMedia.ID, scrapeMedia.Name)
+			scraper := scrape.NewScrape(scrapePath)
+			originalType := scrapeMedia.ScrapeType
+			if noRollback {
+				scrapeMedia.ScrapeType = models.ScrapeTypeOnly
+			}
+			err := scraper.ProcessSingle(scrapeMedia)
+			if err != nil {
+				helpers.AppLogger.Errorf("手动确认后的刮削失败：ID=%d, 错误=%v", scrapeMedia.ID, err)
+			}
+			if noRollback {
+				scrapeMedia.ScrapeType = originalType
+				scrapeMedia.Save()
+			}
+		}()
 	}
 }
 
@@ -761,5 +806,194 @@ func TruncateAllScrapeRecords(c *gin.Context) {
 		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "清空刮削记录失败: " + err.Error(), Data: nil})
 		return
 	}
-	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，所有刮削记录已清空", Data: nil})
+	// 同时清除目录扫描缓存，使下次扫描变为全量扫描
+	scan.ClearScannedDirsCache()
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "操作成功，所有刮削记录已清空，下次扫描将执行全量扫描", Data: nil})
+}
+
+// ExecuteSingleScrape 单独执行某条记录的刮削（不需要等待下次全量扫描）
+// 适用于用户手动确认 tmdbid 后，希望立即执行刮削的场景
+func ExecuteSingleScrape(c *gin.Context) {
+	type singleScrapeReq struct {
+		ID uint `json:"id"`
+	}
+	var req singleScrapeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, APIResponse[any]{Code: BadRequest, Message: "请求参数错误: " + err.Error(), Data: nil})
+		return
+	}
+
+	// 查询 ScrapeMediaFile
+	scrapeMedia := models.GetScrapeMediaFileById(req.ID)
+	if scrapeMedia == nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到要刮削的记录", Data: nil})
+		return
+	}
+
+	// 检查状态：只有待刮削(scanned)或刮削失败(scrape_failed)的记录才能单独执行
+	if scrapeMedia.Status != models.ScrapeMediaStatusScanned && scrapeMedia.Status != models.ScrapeMediaStatusScrapeFailed {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: fmt.Sprintf("当前状态 %s 不允许执行刮削，只有【待刮削】或【刮削失败】的记录才能执行", scrapeMedia.Status), Data: nil})
+		return
+	}
+
+	// 检查是否有 tmdbid
+	if scrapeMedia.TmdbId == 0 && scrapeMedia.MediaType != models.MediaTypeOther {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "请先确认 TMDB ID 后再执行刮削", Data: nil})
+		return
+	}
+
+	// 获取对应的刮削目录
+	scrapePath := models.GetScrapePathByID(scrapeMedia.ScrapePathId)
+	if scrapePath == nil {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "没有找到对应的刮削目录配置", Data: nil})
+		return
+	}
+
+	// 检查刮削目录是否正在运行
+	if scrapePath.IsRunning() {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "刮削目录正在运行中，请稍后再试", Data: nil})
+		return
+	}
+
+	// 将状态改为待刮削，确保可以被处理
+	scrapeMedia.Status = models.ScrapeMediaStatusScanned
+	scrapeMedia.Save()
+
+	// 在后台执行刮削
+	go func() {
+		helpers.AppLogger.Infof("开始单独执行刮削：ID=%d, 文件名=%s", scrapeMedia.ID, scrapeMedia.VideoFilename)
+		scraper := scrape.NewScrape(scrapePath)
+		// 直接调用 Process 方法处理单条记录
+		err := scraper.ProcessSingle(scrapeMedia)
+		if err != nil {
+			helpers.AppLogger.Errorf("单独执行刮削失败：ID=%d, 错误=%v", scrapeMedia.ID, err)
+		} else {
+			helpers.AppLogger.Infof("单独执行刮削成功：ID=%d, 文件名=%s", scrapeMedia.ID, scrapeMedia.VideoFilename)
+		}
+	}()
+
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "刮削任务已在后台启动，请稍后刷新查看结果", Data: nil})
+}
+
+// ExecuteBatchScrapeByTmdbid 批量触发所有已有 tmdbid 但未完成的记录
+func ExecuteBatchScrapeByTmdbid(c *gin.Context) {
+	var mediaFiles []*models.ScrapeMediaFile
+	// 查询 [待刮削/刮削失败/整理失败] 且 [已有 TmdbId] 的记录
+	models.GetDb().Where("tmdb_id > 0 AND status IN (?)", []models.ScrapeMediaStatus{
+		models.ScrapeMediaStatusScanned,
+		models.ScrapeMediaStatusScrapeFailed,
+		models.ScrapeMediaStatusRenameFailed,
+	}).Find(&mediaFiles)
+
+	if len(mediaFiles) == 0 {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "没有找到符合条件的待处理记录", Data: nil})
+		return
+	}
+
+	// 在后台循环处理
+	go func() {
+		helpers.AppLogger.Infof("开始批量执行刮削，共 %d 条记录", len(mediaFiles))
+		// 按路径分组处理，复用 Scraper 实例
+		pathGroups := make(map[uint][]*models.ScrapeMediaFile)
+		for _, mf := range mediaFiles {
+			pathGroups[mf.ScrapePathId] = append(pathGroups[mf.ScrapePathId], mf)
+		}
+
+		for pathID, files := range pathGroups {
+			scrapePath := models.GetScrapePathByID(pathID)
+			if scrapePath == nil {
+				continue
+			}
+			for _, file := range files {
+				helpers.AppLogger.Infof("批量处理 - 开始刮削: %s", file.VideoFilename)
+				scraper := scrape.NewScrape(scrapePath)
+				err := scraper.ProcessSingle(file)
+				if err != nil {
+					helpers.AppLogger.Errorf("批量处理 - 刮削失败: %s, 错误: %v", file.VideoFilename, err)
+				}
+				// 稍微停顿一下，避免并发太高或网盘限速
+				time.Sleep(2000 * time.Millisecond)
+			}
+		}
+		helpers.AppLogger.Infof("批量执行刮削任务全部提交完成")
+	}()
+
+	c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: fmt.Sprintf("已成功触发 %d 条记录的批量刮削任务，请刷新页面查看进度", len(mediaFiles)), Data: nil})
+}
+
+// ExportMappingRecords 导出刮削映射记录（源路径 -> 目标路径）
+// 专门用于备份手动矫正过的映射关系
+func ExportMappingRecords(c *gin.Context) {
+	scrapePathId := c.Query("scrape_path_id")
+	onlyReScrape := c.Query("only_re_scrape") // 是否只导出手动矫正过的
+
+	type mappingRecord struct {
+		ID              uint   `json:"id"`
+		Name            string `json:"name"`
+		Year            int    `json:"year"`
+		TmdbId          int64  `json:"tmdb_id"`
+		SourceFullPath  string `json:"source_full_path"` // 完整源路径
+		DestFullPath    string `json:"dest_full_path"`   // 完整目标路径
+		VideoFilename   string `json:"video_filename"`   // 原始文件名
+		NewVideoName    string `json:"new_video_name"`   // 新文件名
+		Status          string `json:"status"`           // 状态
+		IsReScrape      bool   `json:"is_re_scrape"`     // 是否手动矫正过
+		Resolution      string `json:"resolution"`       // 分辨率
+		ResolutionLevel string `json:"resolution_level"` // 分辨率等级
+		CategoryName    string `json:"category_name"`    // 分类名称
+	}
+
+	var mediaFiles []*models.ScrapeMediaFile
+	query := models.GetDb().Model(&models.ScrapeMediaFile{})
+
+	// 只导出已完成重命名的记录
+	query = query.Where("status = ?", models.ScrapeMediaStatusRenamed)
+
+	if scrapePathId != "" {
+		id, _ := strconv.ParseUint(scrapePathId, 10, 32)
+		query = query.Where("scrape_path_id = ?", uint(id))
+	}
+
+	if onlyReScrape == "true" || onlyReScrape == "1" {
+		query = query.Where("is_re_scrape = ?", true)
+	}
+
+	query.Order("created_at DESC").Find(&mediaFiles)
+
+	if len(mediaFiles) == 0 {
+		c.JSON(http.StatusOK, APIResponse[any]{Code: Success, Message: "没有找到符合条件的映射记录", Data: []mappingRecord{}})
+		return
+	}
+
+	records := make([]mappingRecord, 0, len(mediaFiles))
+	for _, mf := range mediaFiles {
+		sourceFullPath := ""
+		destFullPath := ""
+
+		if mf.MediaType == models.MediaTypeTvShow {
+			sourceFullPath = filepath.Join(mf.GetRemoteFullSeasonPath(), mf.VideoFilename)
+			destFullPath = filepath.Join(mf.GetDestFullSeasonPath(), mf.NewVideoBaseName+mf.VideoExt)
+		} else {
+			sourceFullPath = filepath.Join(mf.GetRemoteFullMoviePath(), mf.VideoFilename)
+			destFullPath = filepath.Join(mf.GetDestFullMoviePath(), mf.NewVideoBaseName+mf.VideoExt)
+		}
+
+		records = append(records, mappingRecord{
+			ID:              mf.ID,
+			Name:            mf.Name,
+			Year:            mf.Year,
+			TmdbId:          mf.TmdbId,
+			SourceFullPath:  sourceFullPath,
+			DestFullPath:    destFullPath,
+			VideoFilename:   mf.VideoFilename,
+			NewVideoName:    mf.NewVideoBaseName + mf.VideoExt,
+			Status:          string(mf.Status),
+			IsReScrape:      mf.IsReScrape,
+			Resolution:      mf.Resolution,
+			ResolutionLevel: mf.ResolutionLevel,
+			CategoryName:    mf.CategoryName,
+		})
+	}
+
+	c.JSON(http.StatusOK, APIResponse[[]mappingRecord]{Code: Success, Message: "导出成功", Data: records})
 }

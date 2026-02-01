@@ -53,6 +53,20 @@ func (u *UserSwitcher) getUsernameByUID() error {
 
 // RunCommandAsUser 使用 su 命令以指定用户身份运行命令
 func (u *UserSwitcher) RunCommandAsUser(command string, args ...string) (string, error) {
+	currentUid := fmt.Sprintf("%d", os.Getuid())
+	
+	// 如果配置的UID与当前运行用户的UID相同，直接执行，不使用su
+	if u.uid == currentUid {
+		fullCmd := command + " " + strings.Join(args, " ")
+		helpers.AppLogger.Infof("以当前用户直接执行命令: %s", fullCmd)
+		cmd := exec.Command("sh", "-c", fullCmd)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return string(output), fmt.Errorf("执行命令失败: %v, 输出: %s", err, string(output))
+		}
+		return string(output), nil
+	}
+
 	// 构建完整的命令
 	fullArgs := []string{"-", u.username, "-c", command + " " + strings.Join(args, " ")}
 
@@ -75,9 +89,18 @@ func (u *UserSwitcher) RunCommandAsUserWithEnv(logFilePath string, env map[strin
 	}
 
 	fullCommand := envVars + command + " " + strings.Join(args, " ")
-	fullArgs := []string{"-", u.username, "-c", fullCommand}
+	
+	var cmd *exec.Cmd
+	currentUid := fmt.Sprintf("%d", os.Getuid())
 
-	cmd := exec.Command("su", fullArgs...)
+	if u.uid == currentUid {
+		helpers.AppLogger.Infof("以当前用户直接执行带环境命令: %s", fullCommand)
+		cmd = exec.Command("sh", "-c", fullCommand)
+	} else {
+		fullArgs := []string{"-", u.username, "-c", fullCommand}
+		cmd = exec.Command("su", fullArgs...)
+	}
+
 	// 设置输出日志
 	logFile, err := os.Create(logFilePath)
 	if err != nil {

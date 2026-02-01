@@ -320,30 +320,51 @@ func Get115UrlByPickCode(c *gin.Context) {
 		helpers.AppLogger.Infof("通过用户ID查询到115账号: %s", account.Username)
 	}
 	ua := c.Request.UserAgent()
+	if ua == "" {
+		ua = v115open.DEFAULTUA
+	}
+	// 记录请求的所有 Header，方便排查 Infuse 等播放器的问题
+	headerStr := ""
+	for k, v := range c.Request.Header {
+		headerStr += fmt.Sprintf("%s: %v | ", k, v)
+	}
+	helpers.AppLogger.Infof("收到播放请求 Header: %s", headerStr)
+
 	client := account.Get115Client(true)
 	helpers.AppLogger.Infof("检查是否具有直链播放标记， force=%d", req.Force)
-	cacheKey := fmt.Sprintf("115url:%s, ua=%s", pickCode, ua)
-	helpers.AppLogger.Infof("准备获取115文件下载链接: pickcode=%s, ua=%s，8095播放=%d 加锁10秒", pickCode, ua, req.Force)
+
+	// 如果 UA 为空或其他非标准 UA，使用默认 UA 以提高 115 兼容性
+	requestUa := ua
+	if requestUa == "" || strings.Contains(requestUa, "AppleCoreMedia") || strings.Contains(requestUa, "Infuse") {
+		requestUa = v115open.DEFAULTUA
+	}
+
+	cacheKey := fmt.Sprintf("115url:%s, ua=%s", pickCode, requestUa)
+	helpers.AppLogger.Infof("准备获取115文件下载链接: pickcode=%s, 使用UA=%s (原始UA=%s)，8095播放=%d 加锁10秒", pickCode, requestUa, ua, req.Force)
+
 	if keyLock.LockWithTimeout(cacheKey, 10*time.Second) {
 		defer keyLock.Unlock(cacheKey)
 		// helpers.AppLogger.Debugf("是否启用本地代理：%d", models.SettingsGlobal.LocalProxy)
-		if req.Force == 0 && models.SettingsGlobal.LocalProxy == 1 {
-			// 跳转到本地代理时使用统一的UA
-			ua = v115open.DEFAULTUA
-			helpers.AppLogger.Infof("因为直链标识=%d, 本地播放代理开关=%d，所以使用默认UA: %s", req.Force, models.SettingsGlobal.LocalProxy, ua)
-		}
+		// The UA handling is now done upfront, so this block is no longer needed here.
+		// if req.Force == 0 && models.SettingsGlobal.LocalProxy == 1 {
+		// 	// 跳转到本地代理时使用统一的UA
+		// 	ua = v115open.DEFAULTUA
+		// 	helpers.AppLogger.Infof("因为直链标识=%d, 本地播放代理开关=%d，所以使用默认UA: %s", req.Force, models.SettingsGlobal.LocalProxy, ua)
+		// }
 		cachedUrl := string(db.Cache.Get(cacheKey))
 		if cachedUrl == "" {
-			cachedUrl = client.GetDownloadUrl(context.Background(), pickCode, ua)
+			helpers.AppLogger.Infof("缓存未命中，调用115接口获取下载地址...")
+			cachedUrl = client.GetDownloadUrl(context.Background(), pickCode, requestUa)
 			if cachedUrl == "" {
+				helpers.AppLogger.Errorf("!!! 从115获取下载链接失败: pickcode=%s", pickCode)
 				c.JSON(http.StatusOK, APIResponse[any]{Code: BadRequest, Message: "获取115下载链接失败", Data: nil})
 				return
 			}
-			helpers.AppLogger.Infof("从接口中查询到115下载链接: pickcode=%s, ua=%s => %s", pickCode, ua, cachedUrl)
+			helpers.AppLogger.Infof("从接口成功获取115连接: %s", cachedUrl)
 			// 缓存半小时
 			db.Cache.Set(cacheKey, []byte(cachedUrl), 1800)
 		} else {
-			helpers.AppLogger.Infof("从缓存中查询到115下载链接: pickcode=%s, ua=%s => %s", pickCode, ua, cachedUrl)
+			helpers.AppLogger.Infof("使用缓存中的115连接: %s", cachedUrl)
 		}
 		if req.Force == 0 {
 			if models.SettingsGlobal.LocalProxy == 1 {

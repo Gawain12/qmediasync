@@ -51,7 +51,12 @@ func Load(baseDir string) *Config {
 	cfg.DB.LogDir = filepath.Join(baseDir, "config", "postgres", "log")
 	cfg.DB.DataDir = filepath.Join(baseDir, "config", "postgres", "data")
 
-	if cfg.DB.Password != "qms123456" || cfg.DB.Host != "localhost" || cfg.DB.User != "qms" {
+	// 检查是否显式设置了 DB_EXTERNAL 环境变量
+	dbExternal := getEnv("DB_EXTERNAL", "")
+	if dbExternal == "true" || dbExternal == "1" {
+		cfg.DB.External = true
+		fmt.Printf("\n检测到 DB_EXTERNAL=true，将连接外部PostgreSQL\n")
+	} else if cfg.DB.Password != "qms123456" || cfg.DB.Host != "localhost" || cfg.DB.User != "qms" {
 		cfg.DB.External = true
 		fmt.Printf("\n检测到外部数据库配置，将连接外部PostgreSQL\n")
 	} else {

@@ -105,6 +105,8 @@ mainloop:
 }
 
 func (m *movieScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
+	// 确保关联的媒体信息已加载
+	mediaFile.QueryRelation()
 	// 创建临时目录
 	mediaFile.ScrapeRootPath = filepath.Join(helpers.RootDir, "config", "tmp", "刮削临时文件", fmt.Sprintf("%d", mediaFile.ScrapePathId), "电影或其他")
 	if err := os.MkdirAll(mediaFile.ScrapeRootPath, 0777); err != nil {
@@ -120,9 +122,26 @@ func (m *movieScrapeImpl) Process(mediaFile *models.ScrapeMediaFile) error {
 			return err
 		}
 	}
+	// 如果记录是已刮削状态但媒体信息丢失，尝试重建
+	if mediaFile.Media == nil {
+		if mediaFile.TmdbId > 0 && mediaFile.MediaType != models.MediaTypeOther {
+			helpers.AppLogger.Warnf("刮削记录媒体信息缺失，尝试重新刮削: %s", mediaFile.VideoFilename)
+			if err := m.Scrape(mediaFile); err != nil {
+				mediaFile.Failed(err.Error())
+				return err
+			}
+		} else {
+			err := fmt.Errorf("媒体信息缺失，无法继续整理: %s", mediaFile.VideoFilename)
+			mediaFile.Failed(err.Error())
+			return err
+		}
+	}
 	// 改为整理中
 	mediaFile.Renaming()
-	m.MakeParentPath(mediaFile, m.scrapePath.CategoryMap)
+	if err := m.MakeParentPath(mediaFile, m.scrapePath.CategoryMap); err != nil {
+		mediaFile.RenameFailed(err.Error())
+		return err
+	}
 	// 非仅刮削，先移动视频文件到新目录，如果是其他仅整理，也移动图片、nfo到新目录
 	if mediaFile.ScrapeType != models.ScrapeTypeOnly {
 		if err := m.renameImpl.RenameAndMove(mediaFile, "", "", ""); err != nil {
@@ -270,6 +289,9 @@ func (m *movieScrapeImpl) GenerateNewName(mediaFile *models.ScrapeMediaFile) {
 	remotePath := mediaFile.GetRemoteMoviePath()
 	mediaFile.VideoExt = filepath.Ext(mediaFile.VideoFilename)
 	oldPathName := filepath.Base(remotePath)
+	if remotePath == "" || oldPathName == "." {
+		oldPathName = ""
+	}
 	baseName := strings.TrimSuffix(filepath.Base(mediaFile.VideoFilename), mediaFile.VideoExt)
 	if mediaFile.ScrapeType == models.ScrapeTypeOnly {
 		mediaFile.NewPathName = oldPathName
@@ -282,6 +304,9 @@ func (m *movieScrapeImpl) GenerateNewName(mediaFile *models.ScrapeMediaFile) {
 	if m.scrapePath.FolderNameTemplate == "" && remotePath == "" {
 		folderTemplate = "{title} ({year})"
 	}
+	// 检测命名冲突：同名同年份不同 TMDB ID 或强制追加tmdbid
+	hasConflict := mediaFile.HasNamingConflict() || mediaFile.ForceAppendTmdbId
+
 	// 根据命名规则生成文件夹名称
 	if m.scrapePath.FolderNameTemplate == "" {
 		if remotePath == "" {
@@ -290,12 +315,54 @@ func (m *movieScrapeImpl) GenerateNewName(mediaFile *models.ScrapeMediaFile) {
 			mediaFile.NewPathName = oldPathName
 		}
 	} else {
-		mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(m.scrapePath.FolderNameTemplate)
+		template := m.scrapePath.FolderNameTemplate
+		if hasConflict && !strings.Contains(template, "{tmdb_id}") {
+			template += " {tmdb_id}"
+		}
+		mediaFile.NewPathName = mediaFile.GenerateNameByTemplate(template)
 	}
+
+	keepOriginal := m.scrapePath.FileNameTemplate == "" && m.scrapePath.FolderNameTemplate == "" && !hasConflict && mediaFile.TmdbId > 0 && mediaFile.CheckIsZeroDayStandard()
+
+	// 检查原始文件名是否已经符合规范且无冲突
 	if m.scrapePath.FileNameTemplate == "" {
-		mediaFile.NewVideoBaseName = baseName
+		if mediaFile.CheckIsZeroDayStandard() {
+			if hasConflict && mediaFile.TmdbId > 0 {
+				helpers.AppLogger.Infof("文件名 %s 命中 0day 但存在冲突，追加 tmdbid", mediaFile.VideoFilename)
+				mediaFile.NewVideoBaseName = fmt.Sprintf("%s.{tmdbid-%d}", baseName, mediaFile.TmdbId)
+				if oldPathName != "" {
+					mediaFile.NewPathName = oldPathName
+				} else {
+					mediaFile.NewPathName = ""
+				}
+			} else if keepOriginal {
+				helpers.AppLogger.Infof("文件名 %s 已符合 0day 规则且无冲突，保留原名", mediaFile.VideoFilename)
+				mediaFile.NewVideoBaseName = baseName
+				if oldPathName != "" {
+					mediaFile.NewPathName = oldPathName
+				} else {
+					mediaFile.NewPathName = ""
+				}
+			} else {
+				mediaFile.NewVideoBaseName = mediaFile.BuildZeroDayBaseName(hasConflict)
+			}
+		} else if keepOriginal {
+			helpers.AppLogger.Infof("文件名 %s 已符合 0day 规则且无冲突，保留原名", mediaFile.VideoFilename)
+			mediaFile.NewVideoBaseName = baseName
+			if oldPathName != "" {
+				mediaFile.NewPathName = oldPathName
+			} else {
+				mediaFile.NewPathName = ""
+			}
+		} else {
+			mediaFile.NewVideoBaseName = mediaFile.BuildZeroDayBaseName(hasConflict)
+		}
 	} else {
-		mediaFile.NewVideoBaseName = mediaFile.GenerateNameByTemplate(m.scrapePath.FileNameTemplate) // 不含扩展名
+		template := m.scrapePath.FileNameTemplate
+		if hasConflict && !strings.Contains(template, "{tmdb_id}") {
+			template += " {tmdb_id}"
+		}
+		mediaFile.NewVideoBaseName = mediaFile.GenerateNameByTemplate(template) // 不含扩展名
 	}
 	mediaFile.Media.Path = filepath.Join(mediaFile.DestPath, mediaFile.CategoryName, mediaFile.NewPathName)
 	mediaFile.Media.VideoFileName = mediaFile.NewVideoBaseName + mediaFile.VideoExt
@@ -392,6 +459,9 @@ func (m *movieScrapeImpl) MoveLocalTempFileToDest(mediaFile *models.ScrapeMediaF
 
 // 创建父文件夹，电影是电影目录
 func (m *movieScrapeImpl) MakeParentPath(mediaFile *models.ScrapeMediaFile, categoryMap map[uint]string) error {
+	if mediaFile.Media == nil {
+		return fmt.Errorf("媒体信息为空，无法创建目标目录: %s", mediaFile.VideoFilename)
+	}
 	if mediaFile.ScrapeType == models.ScrapeTypeOnly {
 		mediaFile.NewPathId = mediaFile.PathId
 		mediaFile.Save()

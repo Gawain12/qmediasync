@@ -266,11 +266,24 @@ func (t *tvShowScrapeImpl) GenerateNewEpisodeName(mediaFile *models.ScrapeMediaF
 		helpers.AppLogger.Infof("仅刮削模式下，不改变文件名，生成去掉扩展名的文件名: %s, 扩展名: %s", baseName, ext)
 		return
 	}
-	if t.scrapePath.FileNameTemplate != "" {
-		baseName = mediaFile.GenerateNameByTemplate(t.scrapePath.FileNameTemplate) // 不含扩展名
+
+	hasConflict := mediaFile.HasNamingConflict() || mediaFile.ForceAppendTmdbId
+	if t.scrapePath.FileNameTemplate == "" {
+		// 检查原始文件名是否已经符合0day规范（包含SxxEyy、分辨率、片源、小组）且无冲突
+		if !hasConflict && mediaFile.TmdbId > 0 && mediaFile.CheckIsZeroDayStandard() {
+			helpers.AppLogger.Infof("集文件名 %s 已符合 0day 规则且无冲突，保留原名", mediaFile.VideoFilename)
+			mediaFile.NewVideoBaseName = baseName
+		} else {
+			mediaFile.NewVideoBaseName = mediaFile.BuildZeroDayBaseName(hasConflict)
+		}
+	} else {
+		template := t.scrapePath.FileNameTemplate
+		if hasConflict && !strings.Contains(template, "{tmdb_id}") {
+			template += " {tmdb_id}"
+		}
+		mediaFile.NewVideoBaseName = mediaFile.GenerateNameByTemplate(template) // 不含扩展名
 	}
-	mediaFile.NewVideoBaseName = baseName
-	helpers.AppLogger.Infof("生成去掉扩展名的文件名: %s, 扩展名: %s", baseName, ext)
+	helpers.AppLogger.Infof("生成去掉扩展名的新文件名: %s, 扩展名: %s", mediaFile.NewVideoBaseName, ext)
 }
 
 func (t *tvShowScrapeImpl) GenerateEpisodeNfo(mediaFile *models.ScrapeMediaFile) error {

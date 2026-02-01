@@ -113,7 +113,7 @@ func (c *Client) SearchTv(tvName string, year int, language string, switchLangua
 	if language != "" {
 		req.SetQueryParam("language", language)
 	}
-	resp, err := c.doRequest(fmt.Sprintf("/search/tv?query=%s", url.QueryEscape(tvName)), req, MakeRequestConfig(2, 5, 5))
+	resp, err := c.doRequest(fmt.Sprintf("/search/tv?query=%s", url.QueryEscape(tvName)), req, MakeRequestConfig(1, 2, 5))
 	if err != nil {
 		helpers.TMDBLog.Errorf("搜索TV失败:%+v", err)
 		return nil, err

@@ -1338,6 +1338,24 @@ func TestExtractMediaInfoRe_Movie(t *testing.T) {
 				Episode: 0,
 			},
 		},
+		{
+			filename: "India.Song.1975.Criterion.Collection.BluRay.1080p.DD1.0.x264.BMDru.mkv",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "india song",
+				Year:    1975,
+				Season:  -1,
+				Episode: 0,
+			},
+		},
+		{
+			filename: "Diamonds.of.the.Night.1964.1080p.CC.Blu-ray.FLAC1.0.x265-HDH.mkv",
+			expectedMediaInfo: &MediaInfo{
+				Name:    "diamonds of the night",
+				Year:    1964,
+				Season:  -1,
+				Episode: 0,
+			},
+		},
 	}
 	i := 1
 	for _, tc := range testCases {

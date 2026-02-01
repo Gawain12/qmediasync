@@ -368,6 +368,23 @@ func GetMediaEpisodeById(id uint) (*MediaEpisode, error) {
 	return &mediaEpisode, nil
 }
 
+// 批量查询集名称（列表页用，避免N+1）
+func GetMediaEpisodeNamesByIds(ids []uint) map[uint]string {
+	result := make(map[uint]string)
+	if len(ids) == 0 {
+		return result
+	}
+	var episodes []MediaEpisode
+	if err := db.Db.Select("id", "episode_name").Where("id IN ?", ids).Find(&episodes).Error; err != nil {
+		helpers.AppLogger.Errorf("批量查询MediaEpisode失败: %v", err)
+		return result
+	}
+	for _, ep := range episodes {
+		result[ep.ID] = ep.EpisodeName
+	}
+	return result
+}
+
 func GetMediaByTmdbId(tmdbId int64) (*Media, error) {
 	var media Media
 	if err := db.Db.Where("tmdb_id = ?", tmdbId).First(&media).Error; err != nil {

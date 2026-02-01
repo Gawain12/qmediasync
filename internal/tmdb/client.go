@@ -132,6 +132,23 @@ func (c *Client) GetConfiguration() (*Configuration, error) {
 	return &respResult, nil
 }
 
+// GetPopularMovies 获取热门电影列表 (用于测试和发现)
+func (c *Client) GetPopularMovies(page int) (*SearchMovieResponse, error) {
+	respResult := SearchMovieResponse{}
+	req := c.resty.R().SetMethod("GET").SetResult(&respResult)
+	req.SetQueryParam("page", fmt.Sprintf("%d", page))
+	resp, err := c.doRequest("/movie/popular", req, MakeRequestConfig(2, 5, 5))
+	if err != nil {
+		helpers.TMDBLog.Errorf("获取热门电影失败:%+v", err)
+		return nil, err
+	}
+	if !resp.IsSuccess() {
+		helpers.TMDBLog.Errorf("获取热门电影失败:%s", resp.String())
+		return nil, fmt.Errorf("获取热门电影失败:%s", resp.String())
+	}
+	return &respResult, nil
+}
+
 // doRequest 执行HTTP请求
 func (c *Client) doRequest(url string, req *resty.Request, options *RequestConfig) (*resty.Response, error) {
 	if options == nil {

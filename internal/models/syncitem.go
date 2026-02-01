@@ -109,11 +109,15 @@ func (sf *SyncFile) GetRemoteFilePathUrlEncode() string {
 func (sf *SyncFile) Make115StrmUrl() string {
 	// 生成URL
 	u, _ := url.Parse(SettingsGlobal.StrmBaseUrl)
+	if u == nil {
+		u = &url.URL{}
+	}
 	ext := filepath.Ext(sf.FileName)
-	u.Path = fmt.Sprintf("/115/url/video%s", ext)
+	u.Path = "/115/url/video" + ext
 	params := url.Values{}
 	params.Add("pickcode", sf.PickCode)
 	params.Add("userid", sf.GetAccount().UserId.String())
+	params.Add("file", sf.FileName) // 保留原文件名在参数中，方便调试和展示
 	u.RawQuery = params.Encode()
 	urlStr := u.String()
 	if sf.SyncPath.GetAddPath() == 1 {
@@ -258,6 +262,12 @@ func (st *SyncFile) CompareStrm() int {
 		ext := filepath.Ext(st.FileName)
 		if !strings.HasSuffix(strmData.UrlPath, ext) {
 			st.Sync.Logger.Warnf("文件 %s 的STRM内容的Url路径 %s 没有以 %s 结尾，重新生成", st.FileName, strmData.UrlPath, ext)
+			return 0
+		}
+		// 检查路径是否匹配新格式 (回归到 video.ext 格式以保证 Infuse 兼容性)
+		expectedPath := "/115/url/video" + ext
+		if strmData.UrlPath != expectedPath {
+			st.Sync.Logger.Warnf("文件 %s 的STRM内容的Url路径 %s 与期望的 %s 不一致，重新生成以保证完美兼容性", st.FileName, strmData.UrlPath, expectedPath)
 			return 0
 		}
 	}

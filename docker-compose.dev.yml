@@ -1,0 +1,20 @@
+# QMediaSync 开发环境 Docker Compose
+# 启动一个 PostgreSQL 容器，使用与生产环境相同的数据目录
+# 用于 Go 开发时连接
+
+services:
+    qmediasync-dev-db:
+        image: postgres:15-alpine
+        container_name: qmediasync-dev-db
+        restart: unless-stopped
+        ports:
+            - "5433:5432"  # 使用 5433 端口避免与 qmediasync-db 冲突
+        volumes:
+            - /home/qms/config/postgres:/var/lib/postgresql
+        environment:
+            - POSTGRES_USER=qms
+            - POSTGRES_PASSWORD=qms123456
+            - POSTGRES_DB=qms
+            - PGDATA=/var/lib/postgresql/data
+            - TZ=Asia/Shanghai
+        user: "12331:12331"  # 使用与 qmediasync 相同的用户 ID

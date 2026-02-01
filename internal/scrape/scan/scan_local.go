@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,16 +27,16 @@ func NewLocalScanImpl(scrapePath *models.ScrapePath, ctx context.Context) *ScanL
 // 检查来源目录和目标目录是否存在
 func (s *ScanLocalImpl) CheckPathExists() error {
 	// 检查sourceId是否存在
-	exists := helpers.PathExists(s.scrapePath.SourcePathId)
+	exists := helpers.PathExists(s.scrapePath.SourcePath)
 	if !exists {
-		ferr := fmt.Errorf("刮削来源目录 %s 疑似不存在，请检查或编辑重新选择来源目录", s.scrapePath.SourcePathId)
+		ferr := fmt.Errorf("刮削来源目录 %s 疑似不存在，请检查或编辑重新选择来源目录", s.scrapePath.SourcePath)
 		return ferr
 	}
 	if s.scrapePath.ScrapeType != models.ScrapeTypeOnly {
 		// 检查targetId是否存在
-		exists = helpers.PathExists(s.scrapePath.DestPathId)
+		exists = helpers.PathExists(s.scrapePath.DestPath)
 		if !exists {
-			ferr := fmt.Errorf("刮削目标目录 %s 疑似不存在，请检查或编辑重新选择目标目录", s.scrapePath.DestPathId)
+			ferr := fmt.Errorf("刮削目标目录 %s 疑似不存在，请检查或编辑重新选择目标目录", s.scrapePath.DestPath)
 			return ferr
 		}
 	}
@@ -64,7 +65,9 @@ func (s *ScanLocalImpl) GetNetFileFiles() error {
 	go s.bufferMonitor(bufferCtx)
 	// 加入根目录
 	s.wg = sync.WaitGroup{}
-	s.addPathToTasks(s.scrapePath.SourcePathId)
+	// 加载现有文件缓存
+	s.scrapePath.LoadExistsFiles()
+	s.addPathToTasks(s.scrapePath.SourcePath)
 	// 启动一个协程处理目录
 	helpers.AppLogger.Infof("开始处理目录 %s, 开启 %d 个任务", s.scrapePath.SourcePath, models.SettingsGlobal.FileDetailThreads)
 	for i := 0; i < models.SettingsGlobal.FileDetailThreads; i++ {
@@ -121,6 +124,15 @@ func (s *ScanLocalImpl) startPathWorkWithLimiter(workerID int) {
 					}
 					fullFilePathName := filepath.Join(parentPath, dirEntry.Name())
 					if dirEntry.IsDir() {
+						// 排除一些不需要扫描的文件夹
+						if strings.HasPrefix(dirEntry.Name(), ".") || dirEntry.Name() == "@eaDir" || dirEntry.Name() == "#recycle" {
+							helpers.AppLogger.Infof("跳过无关文件夹: %s", dirEntry.Name())
+							continue fileloop
+						}
+						if s.shouldSkipDir(dirEntry.Name(), fullFilePathName) {
+							helpers.AppLogger.Infof("跳过过滤目录: %s", fullFilePathName)
+							continue fileloop
+						}
 						// 是目录，加入队列
 						s.addPathToTasks(fullFilePathName)
 						continue fileloop
@@ -133,15 +145,18 @@ func (s *ScanLocalImpl) startPathWorkWithLimiter(workerID int) {
 						Size:     info.Size(),
 						Path:     fullFilePathName,
 					}
+					if s.shouldSkipFile(file.Name, file.Path, file.Size) {
+						helpers.AppLogger.Infof("跳过过滤文件: %s", file.Path)
+						continue fileloop
+					}
 					// 检查文件是否允许处理
 					if !s.scrapePath.CheckFileIsAllowed(file.Name, file.Size) {
 						continue fileloop
 					}
 
 					// 检查文件是否已处理，如果已在数据库中，则直接跳过
-					exists := models.CheckExistsFileIdAndName(fullFilePathName, s.scrapePath.ID)
-					if exists {
-						helpers.AppLogger.Infof("文件 %s 已在数据库中，跳过", fullFilePathName)
+					if s.scrapePath.ExistsFiles != nil && s.scrapePath.ExistsFiles[fullFilePathName] {
+						// helpers.AppLogger.Infof("文件 %s 已在数据库中，跳过", fullFilePathName)
 						continue fileloop
 					}
 					ext := filepath.Ext(file.Name)

@@ -1,0 +1,23 @@
+services:
+    qmediasync:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: qmediasync
+        restart: unless-stopped
+        network_mode: host
+        volumes:
+            - /home/qms/config:/app/config
+            - /Movies:/Movies
+        environment:
+            - TZ=Asia/Shanghai
+            - DB_EXTERNAL=true
+            - DB_HOST=localhost
+            - DB_PORT=15438
+            - DB_USER=qms
+            - DB_PASSWORD=qms123456
+            - DB_NAME=qms
+
+networks:
+    default:
+        name: qmediasync

@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TMDB Confirm - QMediaSync</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #0b1226;
+        --panel-2: #111b34;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --accent-2: #f59e0b;
+        --ok: #22c55e;
+        --warn: #f97316;
+        --danger: #ef4444;
+        --border: #1f2a44;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(1200px 800px at 10% 10%, #1e293b, #0f172a);
+      }
+      .shell {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 32px 20px 60px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: 0.3px;
+      }
+      .hint {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .status {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.7);
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .panel {
+        background: linear-gradient(160deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+        margin-bottom: 16px;
+      }
+      .panel h2 {
+        margin: 0 0 10px;
+        font-size: 16px;
+        color: var(--accent);
+        letter-spacing: 0.4px;
+      }
+      .record-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .record-item {
+        background: rgba(2, 6, 23, 0.4);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+      }
+      .record-item span {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .record-item strong {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .query-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr auto;
+        gap: 10px;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b1226;
+        color: var(--text);
+        outline: none;
+      }
+      button {
+        padding: 10px 14px;
+        border-radius: 10px;
+        border: none;
+        background: var(--accent);
+        color: #02131d;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #0b1226;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        display: flex;
+        flex-direction: column;
+        background: rgba(2, 6, 23, 0.7);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        min-height: 360px;
+      }
+      .poster {
+        background: #0f172a;
+        height: 320px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .poster img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .card-body {
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .title {
+        font-weight: 700;
+        font-size: 15px;
+      }
+      .meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .overview {
+        font-size: 12px;
+        color: #cbd5f5;
+        line-height: 1.5;
+        max-height: 96px;
+        overflow: hidden;
+      }
+      .actions {
+        margin-top: auto;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        color: #0b1226;
+        background: var(--accent-2);
+      }
+      a.tmdb-link {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 12px;
+      }
+      @media (max-width: 720px) {
+        .query-row {
+          grid-template-columns: 1fr;
+        }
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <h1>TMDB Confirm</h1>
+        <div class="hint">
+          Add <code>?api_key=YOUR_KEY</code> if you are not logged in.
+        </div>
+      </header>
+
+      <div id="status" class="status">Loading...</div>
+
+      <section class="panel">
+        <h2>Record</h2>
+        <div class="record-grid" id="recordGrid">
+          <div class="record-item"><span>ID</span><strong id="recId">-</strong></div>
+          <div class="record-item"><span>Media Type</span><strong id="recType">-</strong></div>
+          <div class="record-item"><span>Name</span><strong id="recName">-</strong></div>
+          <div class="record-item"><span>Year</span><strong id="recYear">-</strong></div>
+          <div class="record-item"><span>Season/Episode</span><strong id="recSE">-</strong></div>
+          <div class="record-item"><span>File</span><strong id="recFile">-</strong></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Search</h2>
+        <div class="query-row">
+          <input id="qName" placeholder="Name" />
+          <input id="qYear" type="number" placeholder="Year" />
+          <select id="qType">
+            <option value="movie">movie</option>
+            <option value="tvshow">tvshow</option>
+          </select>
+          <button id="searchBtn">Search</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Results</h2>
+        <div id="results" class="cards"></div>
+      </section>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const apiKey = params.get("api_key") || "";
+      const recordId = params.get("id") || "";
+      const statusEl = document.getElementById("status");
+      const resultsEl = document.getElementById("results");
+      const qName = document.getElementById("qName");
+      const qYear = document.getElementById("qYear");
+      const qType = document.getElementById("qType");
+      const searchBtn = document.getElementById("searchBtn");
+
+      let record = null;
+
+      function setStatus(text, type) {
+        statusEl.textContent = text;
+        if (type === "ok") statusEl.style.color = "var(--ok)";
+        if (type === "warn") statusEl.style.color = "var(--warn)";
+        if (type === "danger") statusEl.style.color = "var(--danger)";
+      }
+
+      function withApiKey(url) {
+        if (!apiKey) return url;
+        return url + (url.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(apiKey);
+      }
+
+      async function apiGet(url) {
+        const res = await fetch(withApiKey(url), { headers: { "Content-Type": "application/json" } });
+        const data = await res.json();
+        if (data.code !== 200) {
+          throw new Error(data.message || "Request failed");
+        }
+        return data.data;
+      }
+
+      async function apiPost(url, body) {
+        const res = await fetch(withApiKey(url), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.code !== 200) {
+          throw new Error(data.message || "Request failed");
+        }
+        return data.data;
+      }
+
+      function renderRecord(info) {
+        document.getElementById("recId").textContent = info ? info.id : "-";
+        document.getElementById("recType").textContent = info ? info.media_type : "-";
+        document.getElementById("recName").textContent = info ? info.name : "-";
+        document.getElementById("recYear").textContent = info && info.year ? info.year : "-";
+        const se = info && (info.season_number || info.episode_number)
+          ? `S${String(info.season_number || 0).padStart(2, "0")}E${String(info.episode_number || 0).padStart(2, "0")}`
+          : "-";
+        document.getElementById("recSE").textContent = se;
+        document.getElementById("recFile").textContent = info ? info.video_filename : "-";
+      }
+
+      function renderCandidates(items) {
+        resultsEl.innerHTML = "";
+        if (!items || items.length === 0) {
+          resultsEl.innerHTML = "<div class=\"status\">No results</div>";
+          return;
+        }
+        for (const item of items) {
+          const card = document.createElement("div");
+          card.className = "card";
+          const poster = document.createElement("div");
+          poster.className = "poster";
+          if (item.poster) {
+            const img = document.createElement("img");
+            img.src = item.poster;
+            img.alt = item.name || "";
+            poster.appendChild(img);
+          } else {
+            poster.textContent = "No poster";
+          }
+
+          const body = document.createElement("div");
+          body.className = "card-body";
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = item.name || "(no title)";
+
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = `TMDB ${item.tmdb_id || "-"}  |  ${item.year || "-"}`;
+
+          const badges = document.createElement("div");
+          badges.className = "meta";
+          badges.innerHTML = `<span class=\"badge\">${item.vote_average || 0} / ${item.vote_count || 0}</span>`;
+
+          const overview = document.createElement("div");
+          overview.className = "overview";
+          overview.textContent = item.overview || "";
+
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const confirmBtn = document.createElement("button");
+          confirmBtn.textContent = recordId ? "Confirm" : "Need record id";
+          confirmBtn.disabled = !recordId;
+          confirmBtn.addEventListener("click", async () => {
+            if (!record) return;
+            try {
+              confirmBtn.disabled = true;
+              setStatus("Submitting...", "warn");
+              await apiPost("/api/scrape/re-scrape", {
+                id: record.id,
+                name: item.name || record.name,
+                year: item.year || record.year,
+                tmdb_id: item.tmdb_id,
+                season: record.season_number || 0,
+                episode: record.episode_number || 0,
+              });
+              setStatus("Submitted. Scrape will start in background.", "ok");
+            } catch (err) {
+              setStatus(err.message || "Submit failed", "danger");
+            } finally {
+              confirmBtn.disabled = false;
+            }
+          });
+
+          const copyBtn = document.createElement("button");
+          copyBtn.className = "secondary";
+          copyBtn.textContent = "Copy ID";
+          copyBtn.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(String(item.tmdb_id || ""));
+              setStatus("Copied TMDB ID", "ok");
+            } catch (err) {
+              setStatus("Copy failed", "danger");
+            }
+          });
+
+          actions.appendChild(confirmBtn);
+          actions.appendChild(copyBtn);
+
+          body.appendChild(title);
+          if (item.original_name && item.original_name !== item.name) {
+            const original = document.createElement("div");
+            original.className = "meta";
+            original.textContent = `Original: ${item.original_name}`;
+            body.appendChild(original);
+          }
+          body.appendChild(meta);
+          if (item.tmdb_url) {
+            const link = document.createElement("a");
+            link.href = item.tmdb_url;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            link.className = "tmdb-link";
+            link.textContent = "Open TMDB";
+            body.appendChild(link);
+          }
+          body.appendChild(badges);
+          body.appendChild(overview);
+          body.appendChild(actions);
+
+          card.appendChild(poster);
+          card.appendChild(body);
+          resultsEl.appendChild(card);
+        }
+      }
+
+      async function loadRecord() {
+        if (!recordId) return null;
+        const data = await apiGet(`/api/scrape/record?id=${encodeURIComponent(recordId)}`);
+        record = data;
+        renderRecord(data);
+        return data;
+      }
+
+      async function searchCandidates() {
+        const name = qName.value.trim();
+        const year = qYear.value.trim();
+        const type = qType.value;
+        setStatus("Searching...", "warn");
+        const url = `/api/scrape/tmdb/search?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&media_type=${encodeURIComponent(type)}${recordId ? `&id=${encodeURIComponent(recordId)}` : ""}`;
+        const data = await apiGet(url);
+        renderCandidates(data.items || []);
+        setStatus(`Found ${data.items ? data.items.length : 0} results`, "ok");
+      }
+
+      searchBtn.addEventListener("click", () => {
+        searchCandidates().catch(err => setStatus(err.message || "Search failed", "danger"));
+      });
+
+      async function init() {
+        try {
+          setStatus("Loading record...", "warn");
+          if (recordId) {
+            const rec = await loadRecord();
+            if (rec) {
+              qName.value = rec.name || params.get("name") || "";
+              qYear.value = rec.year || params.get("year") || "";
+              qType.value = rec.media_type || params.get("media_type") || "movie";
+            }
+          } else {
+            qName.value = params.get("name") || "";
+            qYear.value = params.get("year") || "";
+            qType.value = params.get("media_type") || "movie";
+            renderRecord(null);
+          }
+          if (qName.value) {
+            await searchCandidates();
+          } else {
+            setStatus("Ready. Enter name and search.", "ok");
+          }
+        } catch (err) {
+          setStatus(err.message || "Init failed", "danger");
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>

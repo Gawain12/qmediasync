@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -195,12 +196,14 @@ type ScrapeMediaFile struct {
 	VideoExt             string            `json:"video_ext"`                                       // 视频文件扩展名
 	ReScrapeTime         int64             `json:"re_scrape_time"`                                  // 重新刮削时间
 	IsReScrape           bool              `json:"is_re_scrape"`                                    // 是否重新刮削        // 已上传文件数量
+	ForceAppendTmdbId    bool              `json:"-" gorm:"-"`                                      // 强制在命名中追加tmdbid（仅当前进程）
 	BatchNo              string            `json:"batch_no" gorm:"index:idx_batch_no_tvshow"`       // 批次号(每次扫描都是同一个批次)
 	TvIsRename           bool              `json:"tv_is_rename"`                                    // 是否重命名剧集
 	SeasonIsRename       bool              `json:"season_is_rename"`                                // 是否重命名季
 	Media                *Media            `json:"-" gorm:"-"`                                      // 影视剧信息
 	MediaSeason          *MediaSeason      `json:"-" gorm:"-"`                                      // 季信息
 	MediaEpisode         *MediaEpisode     `json:"-" gorm:"-"`                                      // 集信息
+	ReleaseGroup         string            `json:"release_group"`                                   // 发布小组
 	ScrapeRootPath       string            `json:"scrape_root_path" gorm:"-"`                       // 刮削根目录
 }
 
@@ -588,6 +591,11 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 	}
 	newName := strings.ReplaceAll(template, "{title}", sm.Name)
 	newName = strings.ReplaceAll(newName, "{year}", strconv.Itoa(sm.Year))
+	if sm.ReleaseGroup != "" {
+		newName = strings.ReplaceAll(newName, "{group}", sm.ReleaseGroup)
+	} else {
+		newName = strings.ReplaceAll(newName, "{group}", "")
+	}
 	if sm.Resolution != "" {
 		newName = strings.ReplaceAll(newName, "{resolution}", sm.Resolution)
 	} else {
@@ -652,7 +660,7 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 		} else {
 			newName = strings.ReplaceAll(newName, "{season_episode}", "")
 		}
-		if sm.MediaEpisode != nil && sm.MediaEpisode.EpisodeName != "" {
+		if sm.Media != nil && sm.MediaEpisode != nil && sm.MediaEpisode.EpisodeName != "" {
 			newName = strings.ReplaceAll(newName, "{episode_name}", sm.MediaEpisode.EpisodeName)
 		} else {
 			newName = strings.ReplaceAll(newName, "{episode_name}", "")
@@ -661,8 +669,196 @@ func (sm *ScrapeMediaFile) GenerateNameByTemplate(template string) string {
 	return newName
 }
 
+// CheckIsStandard 检查当前文件名是否符合 PT 规范（包含名、年、分辨率）
+func (sm *ScrapeMediaFile) CheckIsStandard() bool {
+	filename := strings.ToLower(sm.VideoFilename)
+	// 1. 检查年
+	if sm.Year > 0 && !strings.Contains(filename, fmt.Sprintf("%d", sm.Year)) {
+		return false
+	}
+	// 2. 检查分辨率
+	if sm.Resolution != "" && !strings.Contains(filename, strings.ToLower(sm.Resolution)) {
+		return false
+	}
+	// 3. 检查名字 (简单检查，因为名字可能有多种写法)
+	cleanName := strings.ToLower(strings.ReplaceAll(sm.Name, " ", "."))
+	if !strings.Contains(strings.ToLower(strings.ReplaceAll(filename, " ", ".")), cleanName) {
+		return false
+	}
+	// 4. 如果是电视剧，检查 S01E01 或类似格式
+	if sm.MediaType == MediaTypeTvShow {
+		seEpPattern := fmt.Sprintf("s%02de%02d", sm.SeasonNumber, sm.EpisodeNumber)
+		if !strings.Contains(filename, seEpPattern) {
+			// 尝试匹配其它常见格式如 1x01
+			altPattern := fmt.Sprintf("%dx%02d", sm.SeasonNumber, sm.EpisodeNumber)
+			if !strings.Contains(filename, altPattern) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// CheckIsZeroDayStandard 检查当前文件名是否符合 0day 规范（包含名、年、分辨率、片源、小组）
+func (sm *ScrapeMediaFile) CheckIsZeroDayStandard() bool {
+	// 放宽规则：只要能识别出核心信息且 TMDB 唯一，就尽量保留原名
+	if sm.TmdbId <= 0 {
+		return false
+	}
+	if sm.Name == "" {
+		return false
+	}
+
+	nameMatch := sm.containsName(sm.VideoFilename) || sm.containsName(sm.Path) || sm.containsName(sm.TvshowPath)
+	if !nameMatch {
+		extList := []string{}
+		if sm.VideoExt != "" {
+			extList = []string{sm.VideoExt}
+		} else {
+			extList = []string{".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".ts", ".m4v", ".iso", ".rmvb", ".strm"}
+		}
+		info := helpers.ExtractMediaInfoRe(sm.VideoFilename, sm.MediaType == MediaTypeMovie, false, extList)
+		if info != nil && info.Name != "" {
+			nameMatch = true
+		}
+	}
+	if !nameMatch {
+		return false
+	}
+
+	if sm.MediaType == MediaTypeTvShow {
+		if sm.SeasonNumber > 0 && sm.EpisodeNumber > 0 {
+			return sm.hasSeasonEpisode(sm.VideoFilename)
+		}
+		_, season, episode := helpers.ExtractSeasonEpisode(sm.VideoFilename)
+		return season > 0 && episode > 0
+	}
+
+	// 电影只要名称可识别即可，不强制要求年份/分辨率/片源/小组
+	return true
+}
+
+func (sm *ScrapeMediaFile) containsName(target string) bool {
+	if sm.Name == "" || target == "" {
+		return false
+	}
+	normalizedTarget := strings.ToLower(strings.ReplaceAll(target, " ", "."))
+	cleanName := strings.ToLower(strings.ReplaceAll(sm.Name, " ", "."))
+	return strings.Contains(normalizedTarget, cleanName)
+}
+
+func (sm *ScrapeMediaFile) hasSeasonEpisode(filename string) bool {
+	lowerName := strings.ToLower(filename)
+	if sm.SeasonNumber > 0 && sm.EpisodeNumber > 0 {
+		seEpPattern := fmt.Sprintf("s%02de%02d", sm.SeasonNumber, sm.EpisodeNumber)
+		altPattern := fmt.Sprintf("%dx%02d", sm.SeasonNumber, sm.EpisodeNumber)
+		return strings.Contains(lowerName, seEpPattern) || strings.Contains(lowerName, altPattern)
+	}
+	_, season, episode := helpers.ExtractSeasonEpisode(filename)
+	return season > 0 && episode > 0
+}
+
+func normalizeZeroDayToken(value string) string {
+	token := strings.TrimSpace(value)
+	if token == "" {
+		return ""
+	}
+	token = helpers.CleanFileName(token)
+	token = regexp.MustCompile(`[\s\._\-]+`).ReplaceAllString(token, ".")
+	token = strings.Trim(token, ".")
+	return token
+}
+
+func extractYearFromFilename(name string) int {
+	re := regexp.MustCompile(`(?i)\b(19|20)\d{2}\b`)
+	match := re.FindStringSubmatch(name)
+	if len(match) > 0 {
+		year, _ := strconv.Atoi(match[0])
+		return year
+	}
+	return 0
+}
+
+// BuildZeroDayBaseName 生成0day风格的新文件名（不含扩展名）
+func (sm *ScrapeMediaFile) BuildZeroDayBaseName(hasConflict bool) string {
+	baseName := strings.TrimSuffix(filepath.Base(sm.VideoFilename), filepath.Ext(sm.VideoFilename))
+
+	title := sm.Name
+	if title == "" {
+		title = baseName
+	}
+	title = normalizeZeroDayToken(title)
+	if title == "" {
+		title = normalizeZeroDayToken(baseName)
+	}
+
+	parts := make([]string, 0, 6)
+	if title != "" {
+		parts = append(parts, title)
+	}
+
+	if sm.MediaType == MediaTypeTvShow {
+		season := sm.SeasonNumber
+		episode := sm.EpisodeNumber
+		if season <= 0 || episode <= 0 {
+			_, season, episode = helpers.ExtractSeasonEpisode(sm.VideoFilename)
+		}
+		if season > 0 && episode > 0 {
+			parts = append(parts, fmt.Sprintf("S%02dE%02d", season, episode))
+		}
+	} else {
+		year := sm.Year
+		if year == 0 {
+			year = extractYearFromFilename(sm.VideoFilename)
+		}
+		if year > 0 {
+			parts = append(parts, fmt.Sprintf("%d", year))
+		}
+	}
+
+	resolution := sm.Resolution
+	if resolution == "" {
+		resolution, _ = helpers.ExtractResolutionFromFilename(sm.VideoFilename)
+	}
+	if resolution != "" {
+		parts = append(parts, resolution)
+	}
+
+	source := helpers.ExtractSourceTag(sm.VideoFilename)
+	if source != "" {
+		parts = append(parts, source)
+	}
+
+	if hasConflict && sm.TmdbId > 0 {
+		parts = append(parts, fmt.Sprintf("{tmdbid-%d}", sm.TmdbId))
+	}
+
+	name := strings.Join(parts, ".")
+	if name == "" {
+		return baseName
+	}
+
+	group := sm.ReleaseGroup
+	if group == "" {
+		group = helpers.ExtractReleaseGroup(sm.VideoFilename)
+	}
+	if group != "" && !strings.HasSuffix(strings.ToLower(name), strings.ToLower("-"+group)) {
+		name = fmt.Sprintf("%s-%s", name, group)
+	}
+
+	return name
+}
+
+// 检查是否存在同名同年份的冲突
+func (sm *ScrapeMediaFile) HasNamingConflict() bool {
+	var count int64
+	// 在数据库中查找相同名字和年份，但 TMDB ID 不同的记录
+	db.Db.Model(&ScrapeMediaFile{}).Where("id != ? AND name = ? AND year = ? AND tmdb_id != ? AND tmdb_id != 0", sm.ID, sm.Name, sm.Year, sm.TmdbId).Count(&count)
+	return count > 0
+}
+
 // 使用指定的名字和年份重新刮削
-func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season int, episode int) error {
+func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season int, episode int, noRollback bool) error {
 	sm.TmdbId = tmdbId
 	sm.Name = name
 	sm.Year = year
@@ -678,6 +874,12 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 			}
 			sm.Name = tvDetail.Name
 			sm.Year = helpers.ParseYearFromDate(tvDetail.FirstAirDate)
+			if sm.Name != "" {
+				tvSearch, err := tmdbClient.SearchTv(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true)
+				if err == nil && tvSearch != nil && len(tvSearch.Results) > 1 {
+					sm.ForceAppendTmdbId = true
+				}
+			}
 		} else {
 			// 剧集
 			tvSearch, err := tmdbClient.SearchTv(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true)
@@ -706,6 +908,12 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 			}
 			sm.Name = movieDetail.Title
 			sm.Year = helpers.ParseYearFromDate(movieDetail.ReleaseDate)
+			if sm.Name != "" {
+				movieSearch, err := tmdbClient.SearchMovie(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true, false)
+				if err == nil && movieSearch != nil && len(movieSearch.Results) > 1 {
+					sm.ForceAppendTmdbId = true
+				}
+			}
 		} else {
 			// 电影
 			movieSearch, err := tmdbClient.SearchMovie(sm.Name, sm.Year, GlobalScrapeSettings.GetTmdbLanguage(), true, false)
@@ -798,6 +1006,12 @@ func (sm *ScrapeMediaFile) ReScrape(name string, year int, tmdbId int64, season 
 		}
 	}
 	if oldStatus == ScrapeMediaStatusRenamed {
+		if noRollback {
+			sm.Status = ScrapeMediaStatusScanned
+			sm.FailedReason = ""
+			sm.Save()
+			return nil
+		}
 		sm.Status = ScrapeMediaStatusRollbacking
 		sm.Save()
 		if sm.MediaType == MediaTypeTvShow {
@@ -891,7 +1105,12 @@ func (sm *ScrapeMediaFile) GetMovieOrTvshowDestPath() (string, string) {
 // 返回来源端的电影路径，会去掉sp.SourcePath
 // 例如 电影/我是一个中国人 (2025)
 func (sm *ScrapeMediaFile) GetRemoteMoviePath() string {
-	return strings.Replace(sm.Path, sm.SourcePath, "", 1)
+	// 安全检查：如果 Path 不以 SourcePath 开头，说明数据有问题
+	if !strings.HasPrefix(sm.Path, sm.SourcePath) {
+		// 返回空字符串，防止路径嵌套
+		return ""
+	}
+	return strings.TrimPrefix(sm.Path, sm.SourcePath)
 }
 
 // 来源端是否有季文件夹
@@ -901,18 +1120,40 @@ func (sm *ScrapeMediaFile) HasRemoteSeasonPath() bool {
 
 // 返回完整的来源端电影路径
 func (sm *ScrapeMediaFile) GetRemoteFullMoviePath() string {
-	return filepath.Join(sm.SourcePath, sm.GetRemoteMoviePath())
+	// 标准化路径，去除前导斜杠进行比较
+	normalizedPath := strings.TrimPrefix(sm.Path, "/")
+	normalizedSourcePath := strings.TrimPrefix(sm.SourcePath, "/")
+
+	// 如果 Path 本身已经是完整路径（包含 SourcePath），直接返回 Path
+	if strings.HasPrefix(normalizedPath, normalizedSourcePath) {
+		return sm.Path
+	}
+	// 否则尝试拼接（兼容旧数据）
+	return filepath.Join(sm.SourcePath, sm.Path)
 }
 
 // 返回来源端的电视剧路径，会去掉sp.SourcePath
 // 例如 电视剧/我是一个中国人 (2025)
 func (sm *ScrapeMediaFile) GetRemoteTvshowPath() string {
-	return strings.Replace(sm.TvshowPath, sm.SourcePath, "", 1)
+	// 安全检查：如果 TvshowPath 不以 SourcePath 开头，说明数据有问题
+	if !strings.HasPrefix(sm.TvshowPath, sm.SourcePath) {
+		return ""
+	}
+	return strings.TrimPrefix(sm.TvshowPath, sm.SourcePath)
 }
 
 // 返回完整的来源端电视剧路径
 func (sm *ScrapeMediaFile) GetRemoteFullTvshowPath() string {
-	return sm.TvshowPath
+	// 标准化路径，去除前导斜杠进行比较
+	normalizedTvshowPath := strings.TrimPrefix(sm.TvshowPath, "/")
+	normalizedSourcePath := strings.TrimPrefix(sm.SourcePath, "/")
+
+	// 如果 TvshowPath 已经是完整路径（包含 SourcePath），直接返回
+	if strings.HasPrefix(normalizedTvshowPath, normalizedSourcePath) {
+		return sm.TvshowPath
+	}
+	// 否则尝试拼接（兼容旧数据）
+	return filepath.Join(sm.SourcePath, sm.TvshowPath)
 }
 
 // 返回来源端的季路径，会去掉sp.SourcePath
@@ -1079,6 +1320,41 @@ func GetScrapeMediaFiles(page int, pageSize int, mediaType string, status string
 	}
 	// helpers.AppLogger.Infof("查询scrapemedia总数: %d, 当前页 %d offset %d 数量: %d", total, page, offset, len(scrapeMediaFiles))
 	scrapeMediaFiles = DecodeScrapeMediaFile(scrapeMediaFiles)
+	return total, scrapeMediaFiles
+}
+
+// 轻量查询：不解码JSON，不加载关联表（用于列表页提升性能）
+func GetScrapeMediaFilesLite(page int, pageSize int, mediaType string, status string, name string) (int64, []*ScrapeMediaFile) {
+	offset := (page - 1) * pageSize
+	var scrapeMediaFiles []*ScrapeMediaFile
+	tx := db.Db.Order("id desc").Offset(offset).Limit(pageSize).Order("id DESC")
+	txc := db.Db.Model(&ScrapeMediaFile{})
+	condition := make(map[string]interface{})
+	if mediaType != "" {
+		condition["media_type"] = mediaType
+	}
+	if status != "" {
+		condition["status"] = status
+	}
+	if len(condition) > 0 {
+		tx.Where(condition)
+		txc.Where(condition)
+	}
+	if name != "" {
+		tx.Where("(path LIKE ? OR video_filename LIKE ? OR name LIKE ?)", fmt.Sprintf("%%%s%%", name), fmt.Sprintf("%%%s%%", name), fmt.Sprintf("%%%s%%", name))
+		txc.Where("(path LIKE ? OR video_filename LIKE ? OR name LIKE ?)", fmt.Sprintf("%%%s%%", name), fmt.Sprintf("%%%s%%", name), fmt.Sprintf("%%%s%%", name))
+	}
+	err := tx.Find(&scrapeMediaFiles).Error
+	if err != nil {
+		helpers.AppLogger.Errorf("查询scrapemedia失败: %v", err)
+		return 0, nil
+	}
+	var total int64
+	err = txc.Count(&total).Error
+	if err != nil {
+		helpers.AppLogger.Errorf("查询scrapemedia总数失败: %v", err)
+		return 0, nil
+	}
 	return total, scrapeMediaFiles
 }
 

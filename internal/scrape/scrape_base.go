@@ -77,7 +77,51 @@ func (s *ScrapeBase) FFprobe(mediaFile *models.ScrapeMediaFile) error {
 	}
 	// 如果有下载连接，则提取视频信息
 	s.GetFFprobeInfoFromFileOrUrl(mediaFile, videoPathOrUrl)
+
+	// 如果 ffprobe 之后分辨率还是空的，尝试用 mediainfo
+	if mediaFile.Resolution == "" {
+		s.GetMediainfoInfoFromFileOrUrl(mediaFile, videoPathOrUrl)
+	}
 	return nil
+}
+
+func (sm *ScrapeBase) GetMediainfoInfoFromFileOrUrl(mediaFile *models.ScrapeMediaFile, videoPathOrUrl string) {
+	mediainfoJson, err := helpers.GetMediainfoJson(videoPathOrUrl)
+	if err != nil {
+		helpers.AppLogger.Errorf("获取mediainfo数据失败: %v", err)
+		sm.extractResolutionFromFilename(mediaFile)
+		return
+	}
+
+	if mediainfoJson == nil || len(mediainfoJson.Media.Track) == 0 {
+		helpers.AppLogger.Error("获取mediainfo数据失败，数据为空")
+		sm.extractResolutionFromFilename(mediaFile)
+		return
+	}
+
+	for _, track := range mediainfoJson.Media.Track {
+		if track.Type == "Video" {
+			if mediaFile.VideoCodec == nil {
+				mediaFile.VideoCodec = &models.VideoCodec{}
+			}
+			width := helpers.StringToInt64(track.Width)
+			height := helpers.StringToInt64(track.Height)
+			if width > 0 && height > 0 {
+				mediaFile.VideoCodec.Width = width
+				mediaFile.VideoCodec.Height = height
+				mediaFile.VideoCodec.Codec = track.Format
+				mediaFile.VideoCodec.Micodec = track.CodecID
+
+				resolution := helpers.GetResolutionLevel(width, height)
+				mediaFile.ResolutionLevel = resolution.CommonName
+				mediaFile.Resolution = resolution.StandardName
+				helpers.AppLogger.Infof("通过 mediainfo 成功识别分辨率: %s (%s)", mediaFile.Resolution, mediaFile.ResolutionLevel)
+				return
+			}
+		}
+	}
+	// 如果到这里还没解决，保底尝试正则
+	sm.extractResolutionFromFilename(mediaFile)
 }
 
 func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaFile, videoPathOrUrl string) {
@@ -89,6 +133,7 @@ func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaF
 	ffprobeJson, err = helpers.GetFFprobeJson(videoPathOrUrl)
 	if err != nil {
 		helpers.AppLogger.Errorf("获取ffprobe数据文件失败: %v", err)
+		sm.extractResolutionFromFilename(mediaFile)
 		return
 	}
 	// }
@@ -96,6 +141,7 @@ func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaF
 	mediaFile.SubtitleCodec = make([]*models.Subtitle, 0)
 	if ffprobeJson == nil {
 		helpers.AppLogger.Error("获取ffprobe数据失败，数据为空")
+		sm.extractResolutionFromFilename(mediaFile)
 		return
 	}
 	for index, stream := range ffprobeJson.Streams {
@@ -155,12 +201,28 @@ func (sm *ScrapeBase) GetFFprobeInfoFromFileOrUrl(mediaFile *models.ScrapeMediaF
 			mediaFile.SubtitleCodec = append(mediaFile.SubtitleCodec, sub)
 		}
 	}
-	if mediaFile.VideoCodec != nil {
+	if mediaFile.VideoCodec != nil && mediaFile.VideoCodec.Width > 0 {
 		resolution := helpers.GetResolutionLevel(mediaFile.VideoCodec.Width, mediaFile.VideoCodec.Height)
 		mediaFile.ResolutionLevel = resolution.CommonName
 		mediaFile.Resolution = resolution.StandardName
 		// 计算是否HDR视频
 		mediaFile.IsHDR = helpers.IsHDRFormat(mediaFile.VideoCodec.PixelFormat)
+		helpers.AppLogger.Infof("通过 ffprobe 成功识别分辨率: %s (%s)", mediaFile.Resolution, mediaFile.ResolutionLevel)
+	} else {
+		// 这里不直接调文件名提取，因为 FFprobe 之后可能还会调 Mediainfo
+	}
+}
+
+func (s *ScrapeBase) extractResolutionFromFilename(mediaFile *models.ScrapeMediaFile) {
+	if mediaFile.Resolution != "" {
+		return
+	}
+	filename := mediaFile.VideoFilename
+	standard, common := helpers.ExtractResolutionFromFilename(filename)
+	if standard != "" {
+		mediaFile.Resolution = standard
+		mediaFile.ResolutionLevel = common
+		helpers.AppLogger.Infof("从文件名 %s 中提取到分辨率: %s", filename, standard)
 	}
 }
 
